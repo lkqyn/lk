@@ -3,7 +3,7 @@
 
 #include "main.h"
 #include <stdint.h>
-
+#include  "encoder.h"
 typedef struct
 {
     float Ts;          // PWM周期计数(ARR+1)
@@ -14,8 +14,11 @@ typedef struct
     float Uq;
     float Ualpha;
     float Ubeta;
-
-    float angle;       // 电角度(rad)
+uint16_t angle_sector;   // 当前电角大扇区
+uint16_t angle;          // 当前90°电角扇区内细分角度 0~255
+int16_t  scope;          // 当前扇区宽度（这里可固定）
+uint16_t lead_angle;     // 超前角 0~1023
+    
     float sintheta;
     float costheta;
 
@@ -71,5 +74,5 @@ void FOC_OutputByTheta(foc_TypeDef *mfoc, float angle, float uq);
 void FOC_OpenLoopSetFe(foc_TypeDef *mfoc, float fe_hz);
 void FOC_OpenLoopSetUqRatio(foc_TypeDef *mfoc, float uq_ratio);
 void FOC_OpenLoopRampUqRatio(foc_TypeDef *mfoc, float target_ratio, float step_per_call);
-
+void Sector_tracker_inc_encoder(foc_TypeDef *mfoc, encoder_t *enc);
 #endif

@@ -37,5 +37,6 @@ motordriver\foc.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h
 motordriver\foc.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pcd.h
 motordriver\foc.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_ll_usb.h
 motordriver\foc.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pcd_ex.h
+motordriver\foc.o: ..\Application\encoder.h
 motordriver\foc.o: ../Core/Inc/tim.h
 motordriver\foc.o: E:\Keil5\ARM\ARMCC\Bin\..\include\math.h

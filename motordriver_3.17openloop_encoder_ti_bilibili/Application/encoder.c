@@ -66,3 +66,10 @@ void Encoder_Update(encoder_t *enc, TIM_HandleTypeDef *htim_enc, float dt)
     const float alpha = 0.05f;
     enc->vel_rpm_f += alpha * (enc->vel_rpm - enc->vel_rpm_f);
 }
+
+int32_t Encoder_GetCountInOneTurn(encoder_t *enc)
+{
+    int32_t cnt = (int32_t)(enc->pos_cnt_total % 4000);
+    if (cnt < 0) cnt += 4000;
+    return cnt;
+}

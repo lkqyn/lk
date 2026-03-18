@@ -50,8 +50,8 @@ motordriver\main.o: ../Application/motor_driver.h
 motordriver\main.o: ../Application/stepper_driver.h
 motordriver\main.o: ../Application/driver_eg2131_gpio.h
 motordriver\main.o: ../Application/FOC.h
+motordriver\main.o: ../Application/encoder.h
 motordriver\main.o: ../Application/adc_task.h
 motordriver\main.o: ../Application/motion_trap2.h
-motordriver\main.o: ../Application/encoder.h
 motordriver\main.o: ../Application/vofa.h
 motordriver\main.o: E:\Keil5\ARM\ARMCC\Bin\..\include\math.h

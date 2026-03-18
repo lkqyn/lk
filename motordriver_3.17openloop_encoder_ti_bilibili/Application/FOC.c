@@ -1,7 +1,7 @@
 #include "FOC.h"
 #include "tim.h"
 #include "math.h"
-
+#include  "encoder.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -106,7 +106,42 @@ void FOC_Init(void)
 
     FOC_AllOff();
 }
+// 适配增量式AB编码器，不再依赖 angledata[] / Scope[]
+void Sector_tracker_inc_encoder(foc_TypeDef *mfoc, encoder_t *enc)
+{
+    // 当前单圈计数，归一到 0~3999
+    int32_t cnt = Encoder_GetCountInOneTurn(enc);
+    if (cnt < 0) cnt += 4000;
 
+    // 每机械转 50 个电角周期
+    // 每个电角周期 = 4000 / 50 = 80 count
+    const int32_t counts_per_elec_cycle = 80;
+
+    // 1个电角周期再分4个扇区，每扇区 20 count
+    const int32_t counts_per_sector = 20;
+
+    // 当前位于第几个电角周期 0~49
+    int32_t elec_cycle_idx = cnt / counts_per_elec_cycle;
+
+    // 周期内位置 0~79
+    int32_t cnt_in_cycle = cnt % counts_per_elec_cycle;
+
+    // 当前在该电角周期内的第几个90°扇区 0~3
+    int32_t sub_sector = cnt_in_cycle / counts_per_sector;
+
+    // 扇区内位置 0~19
+    int32_t cnt_in_sector = cnt_in_cycle % counts_per_sector;
+
+    // 对齐第一份代码的“总 sector 编号”
+    // 一圈 50 个电角周期 * 4 = 200 个扇区
+    mfoc->angle_sector = (uint16_t)(elec_cycle_idx * 4 + sub_sector);
+
+    // 当前扇区宽度固定 20 count
+    mfoc->scope = (int16_t)counts_per_sector;
+
+    // 映射为扇区内 0~255 细分角度
+    mfoc->angle = (uint16_t)((cnt_in_sector * 256) / counts_per_sector);
+}
 // ====================== 设置Ud/Uq ======================
 void set_uduq(foc_TypeDef *mfoc, float ud, float uq)
 {

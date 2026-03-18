@@ -33,9 +33,9 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-extern volatile uint8_t g_cmd_start;
-extern volatile uint8_t g_cmd_stop;
-extern volatile uint8_t g_cmd_zero;
+ volatile uint8_t g_cmd_start;
+ volatile uint8_t g_cmd_stop;
+ volatile uint8_t g_cmd_zero;
 /* USER CODE END PV */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY

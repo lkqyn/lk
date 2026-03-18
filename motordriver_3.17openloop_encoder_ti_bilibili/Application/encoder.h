@@ -37,5 +37,5 @@ void Encoder_Update(encoder_t *enc, TIM_HandleTypeDef *htim_enc, float dt);
  * @brief 可选：清零位置（用于Z回零后对齐）
  */
 void Encoder_Zero(encoder_t *enc, TIM_HandleTypeDef *htim_enc);
-
+int32_t Encoder_GetCountInOneTurn(encoder_t *enc);
 #endif
