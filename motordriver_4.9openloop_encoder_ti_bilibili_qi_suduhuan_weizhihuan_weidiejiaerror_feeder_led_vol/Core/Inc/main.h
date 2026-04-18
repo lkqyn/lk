@@ -61,8 +61,6 @@ void Error_Handler(void);
 #define LED_R_GPIO_Port GPIOE
 #define LED_G_Pin GPIO_PIN_5
 #define LED_G_GPIO_Port GPIOE
-#define SW_MICROSTEP_0_Pin GPIO_PIN_6
-#define SW_MICROSTEP_0_GPIO_Port GPIOE
 #define ENCODER_Z_Pin GPIO_PIN_3
 #define ENCODER_Z_GPIO_Port GPIOA
 #define ENCODER_Z_EXTI_IRQn EXTI3_IRQn
@@ -84,6 +82,8 @@ void Error_Handler(void);
 #define SW_ADDR_2_GPIO_Port GPIOE
 #define SW_TERM_RES_Pin GPIO_PIN_15
 #define SW_TERM_RES_GPIO_Port GPIOE
+#define SW_MICROSTEP_0_Pin GPIO_PIN_11
+#define SW_MICROSTEP_0_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

@@ -26,6 +26,7 @@ motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_adc.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_ll_adc.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_adc_ex.h
+motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -37,6 +38,7 @@ motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pcd.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_ll_usb.h
 motordriver\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pcd_ex.h
 motordriver\main.o: ../Core/Inc/adc.h
+motordriver\main.o: ../Core/Inc/can.h
 motordriver\main.o: ../Core/Inc/tim.h
 motordriver\main.o: ../USB_DEVICE/App/usb_device.h
 motordriver\main.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_def.h
@@ -59,3 +61,4 @@ motordriver\main.o: ../Application/pid.h
 motordriver\main.o: ../Application/connecting.h
 motordriver\main.o: ../Application/feeder.h
 motordriver\main.o: ../Application/led_task.h
+motordriver\main.o: ../Application/can_open.h

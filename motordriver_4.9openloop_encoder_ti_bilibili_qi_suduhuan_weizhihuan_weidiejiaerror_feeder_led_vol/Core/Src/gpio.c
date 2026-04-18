@@ -61,21 +61,27 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PEPin PEPin PEPin PEPin
-                           PEPin PEPin PEPin PEPin
-                           PEPin PEPin */
-  GPIO_InitStruct.Pin = SW_MICROSTEP_0_Pin|SW_MICROSTEP_1_Pin|SW_MICROSTEP_2_Pin|SW_DIR_Pin
-                          |SW_CTRL_MODE_Pin|SW_MOTOR_TYPE_Pin|SW_ADDR_0_Pin|SW_ADDR_1_Pin
-                          |SW_ADDR_2_Pin|SW_TERM_RES_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
   /*Configure GPIO pin : PtPin */
   GPIO_InitStruct.Pin = ENCODER_Z_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(ENCODER_Z_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PEPin PEPin PEPin PEPin
+                           PEPin PEPin PEPin PEPin
+                           PEPin */
+  GPIO_InitStruct.Pin = SW_MICROSTEP_1_Pin|SW_MICROSTEP_2_Pin|SW_DIR_Pin|SW_CTRL_MODE_Pin
+                          |SW_MOTOR_TYPE_Pin|SW_ADDR_0_Pin|SW_ADDR_1_Pin|SW_ADDR_2_Pin
+                          |SW_TERM_RES_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PtPin */
+  GPIO_InitStruct.Pin = SW_MICROSTEP_0_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(SW_MICROSTEP_0_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI3_IRQn, 6, 0);

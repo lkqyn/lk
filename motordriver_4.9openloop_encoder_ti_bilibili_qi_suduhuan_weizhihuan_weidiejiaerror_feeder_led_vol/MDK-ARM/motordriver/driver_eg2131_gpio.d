@@ -28,6 +28,7 @@ motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_
 motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_adc.h
 motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_ll_adc.h
 motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_adc_ex.h
+motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 motordriver\driver_eg2131_gpio.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h

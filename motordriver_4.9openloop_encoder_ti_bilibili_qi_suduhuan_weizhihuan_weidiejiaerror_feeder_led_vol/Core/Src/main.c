@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "can.h"
 #include "tim.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -39,6 +40,7 @@
 #include "connecting.h"
 #include "feeder.h"
 #include "led_task.h"
+#include "can_open.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -77,21 +79,6 @@ volatile float Ud_ref = 0.0f;                // 先固定
 
 volatile uint8_t speed_loop_div = 0;         // 10kHz -> 2kHz 分频作用
 
-//测试能否停止准确的测试变量
-//uint8_t  test_repeat_enable = 1;          // 1: 开启重复测试
-//uint8_t  test_repeat_running = 0;         // 当前这次动作是否已发出
-//uint32_t test_last_tick = 0;              // 上次发命令时间
-//uint32_t test_interval_ms = 2000;         // 每次动作间隔 2000ms
-
-//int32_t  test_start_cnt = 0;              // 测试起始位置
-//uint32_t test_cycle_index = 0;            // 第几次动作
-
-//float test_single_err_turns = 0.0f;       // 单次误差（圈）
-//float test_total_err_turns  = 0.0f;       // 累计误差（圈）
-
-//float test_last_actual_total_turns = 0.0f;
-//float test_last_expected_total_turns = 0.0f;
-
 //测试指定时间内转指定圈数的变量
 uint8_t  feeder_auto_test_enable = 1;   // 1: 自动重复送料测试
 uint8_t  feeder_wait_done = 0;          // 当前这次送料是否已经发出
@@ -104,12 +91,9 @@ float feeder_total_err_turns  = 0.0f;   // 累计误差(圈)
 float feeder_last_actual_total_turns = 0.0f;
 float feeder_last_expected_total_turns = 0.0f;
 
-
-
 float current[2],vol=0,temperature=0 ;//定义ADC物理量
 
-
-
+canopen_control_t can_cmd;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -157,7 +141,12 @@ int main(void)
   MX_TIM6_Init();
   MX_ADC1_Init();
   MX_TIM2_Init();
+  MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
+  //CANOpen_Init(&hcan1,1);
+  DipSwitch_Read(&dip_switch);
+  CANOpen_Init(&hcan1, dip_switch.comm_addr);
+
   VOFA_Init();
   LED_Task_Init();
   // FOC初始化
@@ -200,9 +189,9 @@ int main(void)
 
   Feeder_Init(&g_feeder,
             &enc,
-            10.0f,     // 每次送料20圈
-            3.0f,      // 每次送料3秒
-            1500.0f,   // 速度上限1500rpm
+            20.0f,     // 每次送料20圈
+            1.0f,      // 每次送料3秒
+            1800.0f,   // 速度上限1800rpm
             0.2f,     // 加速时间占比
             0.2f);    // 减速时间占比
 
@@ -244,6 +233,44 @@ while (1)
     uint32_t now = HAL_GetTick();
     static uint32_t last_vofa = 0;
 
+    // -----------------------------------------
+    CANOpen_Process();
+    // ----------------------------------------
+    if (CANOpen_GetCommand(&can_cmd))
+    {
+      switch (can_cmd.command)
+      {
+      case CANOPEN_CMD_STOP:
+          connect_crt.speed = 0.0f;
+          Uq_ref = 0.0f;
+          Ud_ref = 0.0f;
+          PID_Controller_Reset(&speed_pi);
+          break;
+
+      case CANOPEN_CMD_START:
+          if (can_cmd.mode == CANOPEN_MODE_SPEED)
+          {
+              connect_crt.motor_mode = 2;
+              connect_crt.speed = (float)can_cmd.target_speed_rpm;
+          }
+          break;
+
+      case CANOPEN_CMD_ZERO:
+          Encoder_Zero(&enc, &htim2);
+          Feeder_SetBaseHere(&g_feeder, &enc);
+          break;
+
+      case CANOPEN_CMD_FEED_ONCE:
+          if (!MotionTrap2_IsBusy(&g_motion_trap2))
+          {
+              Feeder_Once(&g_feeder, &g_motion_trap2, &enc);
+          }
+          break;
+
+      default:
+          break;
+      }
+    }
     // -----------------------------------------
     // 自动送料测试：每隔feeder_interval_ms一段时间送料一次
     // -----------------------------------------
@@ -299,6 +326,7 @@ while (1)
       }
     }
 
+
     // -----------------------------------------
     // VOFA 打印：10ms一帧，防止USB队列塞满
     // CH1: 第几次送料
@@ -334,7 +362,7 @@ while (1)
             feeder_total_err_turns,      // CH3
             actual_total_turns,          // CH4
             expected_total_turns,        // CH5
-            pos_err_cnt                  // CH6
+            enc.vel_rpm_f                  // CH6
         );
     }
 
@@ -470,22 +498,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
     }
 }
-// 外部中断回调
-/*
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    if (GPIO_Pin == ENCODER_Z_Pin)
-    {
-        g_z_seen++;
-
-        if (!g_z_homed)
-        {
-            g_z_homed = 1;
-            Encoder_Zero(&enc, &htim2);
-        }
-    }
-}
-*/
 /* USER CODE END 4 */
 
 /**

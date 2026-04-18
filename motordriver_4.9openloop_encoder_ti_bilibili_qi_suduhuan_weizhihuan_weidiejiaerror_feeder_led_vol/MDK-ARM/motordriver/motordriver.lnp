@@ -3,6 +3,7 @@
 "motordriver\main.o"
 "motordriver\gpio.o"
 "motordriver\adc.o"
+"motordriver\can.o"
 "motordriver\tim.o"
 "motordriver\stm32f4xx_it.o"
 "motordriver\stm32f4xx_hal_msp.o"
@@ -29,6 +30,7 @@
 "motordriver\stm32f4xx_hal_adc.o"
 "motordriver\stm32f4xx_hal_adc_ex.o"
 "motordriver\stm32f4xx_ll_adc.o"
+"motordriver\stm32f4xx_hal_can.o"
 "motordriver\stm32f4xx_hal_tim.o"
 "motordriver\stm32f4xx_hal_tim_ex.o"
 "motordriver\system_stm32f4xx.o"
@@ -49,6 +51,7 @@
 "motordriver\connecting.o"
 "motordriver\feeder.o"
 "motordriver\led_task.o"
+"motordriver\can_open.o"
 --library_type=microlib --strict --scatter "motordriver\motordriver.sct"
 --summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
 --info sizes --info totals --info unused --info veneers

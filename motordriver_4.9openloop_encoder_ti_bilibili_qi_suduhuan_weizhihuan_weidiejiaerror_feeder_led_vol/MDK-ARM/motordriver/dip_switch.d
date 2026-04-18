@@ -26,6 +26,7 @@ motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cort
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_adc.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_ll_adc.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_adc_ex.h
+motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ex.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h
@@ -36,11 +37,5 @@ motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pcd.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_ll_usb.h
 motordriver\dip_switch.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pcd_ex.h
-motordriver\dip_switch.o: ../Core/Inc/gpio.h
 motordriver\dip_switch.o: ../Core/Inc/main.h
-motordriver\dip_switch.o: ../USB_DEVICE/App/usb_device.h
-motordriver\dip_switch.o: ../Middlewares/ST/STM32_USB_Device_Library/Core/Inc/usbd_def.h
-motordriver\dip_switch.o: ../USB_DEVICE/Target/usbd_conf.h
 motordriver\dip_switch.o: E:\Keil5\ARM\ARMCC\Bin\..\include\stdio.h
-motordriver\dip_switch.o: E:\Keil5\ARM\ARMCC\Bin\..\include\stdlib.h
-motordriver\dip_switch.o: E:\Keil5\ARM\ARMCC\Bin\..\include\string.h
