@@ -62,6 +62,7 @@ extern uint16_t angledata[200];
 extern float speed_send;
 uint8_t erro_flag = 0;
 uint8_t limit_vol = 8;
+static uint32_t motor_protect_current_enable_ms = 0U;
 
 #define CURRENT_LOOP_HZ      10000.0f
 #define SPEED_LOOP_DIV       10U
@@ -74,7 +75,7 @@ uint8_t limit_vol = 8;
 /* USER CODE BEGIN PM */
 void motor_protect(void)
 {
-  if(temperature > 100 || fabs(m1_foc.Iq) > 3 || fabs(m1_foc.Id) > 3 || (vol > 25 || vol < 7))
+  if(temperature > 100 || (vol > 25 || vol < 7))
   {
     connect_crt.motor_mode = 0;
     set_uduq(&m1_foc, 0, 0);
@@ -125,12 +126,12 @@ static uint8_t flash_calibration_ready(void)
 
 static void vofa_debug_send(void)
 {
-  VOFA_SendFrame6(m1_foc.tar_Iq,
+  VOFA_SendFrame6((float)connect_crt.motor_mode,
+                  m1_foc.tar_Iq,
                   m1_foc.Iq,
-                  m1_foc.tar_Id,
                   m1_foc.Id,
-                  current[0],
-                  current[1]);
+                  (float)m1_foc.angle_sector,
+                  (float)m1_foc.angle);
 }
 
 static void speed_loop_run(void)
@@ -201,6 +202,7 @@ static void motor_control_init(void)
   connect_crt.drive_current = 0.1f;
   m1_foc.tar_Id = 0.0f;
   set_foc_Iqcurrent(&m1_foc, connect_crt.drive_current);
+  motor_protect_current_enable_ms = HAL_GetTick() + 1500U;
   HAL_TIM_Base_Start_IT(&htim6);
 }
 

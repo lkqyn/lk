@@ -42,6 +42,7 @@ motordriver\foc.o: ../Core/Inc/tim.h
 motordriver\foc.o: E:\Keil5\ARM\ARMCC\Bin\..\include\math.h
 motordriver\foc.o: ../Core/Inc/adc.h
 motordriver\foc.o: ..\Application\adc_task.h
+motordriver\foc.o: E:\Keil5\ARM\ARMCC\Bin\..\include\stdlib.h
 motordriver\foc.o: ..\Application\myflash.h
 motordriver\foc.o: ..\Application\mt6816.h
 motordriver\foc.o: E:\Keil5\ARM\ARMCC\Bin\..\include\stdbool.h
