@@ -1,0 +1,221 @@
+#include "app_main.h"
+#include "app_printer.h"
+#include "app_sensor.h"
+#include "cmsis_os.h"
+#include "usart.h"
+#include <stdio.h>
+
+#define printf(...) ((void)0)
+
+#define PRINT_DONE_ACTIVE_LEVEL   GPIO_PIN_RESET
+#define PRINT_DONE_IDLE_LEVEL     GPIO_PIN_SET
+#define PRINT_REQ_DEBOUNCE_MS     30U
+#define PRINT_MIN_TIME_MS         1200U
+#define PRINT_DONE_TIMEOUT_MS     15000U
+#define PRINT_DONE_POLL_MS        300U
+
+typedef enum
+{
+  PRINT_STATE_IDLE = 0,
+  PRINT_STATE_WAIT_RELEASE
+} PrintState;
+
+static uint8_t AppDebug_ReadCommand(void)
+{
+  uint8_t data = 0;
+
+  if (HAL_UART_Receive(&huart1, &data, 1, 0) != HAL_OK)
+  {
+    return 0;
+  }
+
+  return data;
+}
+
+static void AppDebug_PrintHelp(void)
+{
+  printf("Debug commands:\r\n");
+  printf("  p/P: print normal label by UART5\r\n");
+  printf("  t/T: print simple UART5 test label\r\n");
+  printf("  s/S: query printer ~HS status by UART5\r\n");
+  printf("  b/B: set printer serial baud to 115200\r\n");
+  printf("  h/H: show this help\r\n");
+}
+
+static void AppDebug_PrintSimpleTest(void)
+{
+  static const char zpl[] =
+    "^XA\r\n"
+    "^FO50,50^A0N,50,50^FDBOARD B UART5 TEST^FS\r\n"
+    "^XZ\r\n";
+
+  printf("Send simple UART5 test label\r\n");
+  AppPrinter_SendZpl(zpl);
+}
+
+static void AppDebug_QueryPrinterStatus(void)
+{
+  uint8_t status[256];
+  uint16_t len;
+
+  printf("Query printer status by ~HS\r\n");
+  len = AppPrinter_QueryHostStatus(status, sizeof(status), 1000);
+
+  if (len == 0)
+  {
+    printf("No printer status received\r\n");
+    return;
+  }
+
+  printf("Printer status received, len=%u\r\n", len);
+  printf("%s\r\n", status);
+}
+
+void AppTask(void *argument)
+{
+  uint32_t lastDebugTick = 0;
+  PrintState printState = PRINT_STATE_IDLE;
+  uint8_t manualPrintActive = 0;
+  uint8_t requestActive = 0;
+  uint8_t lastRequestActive = 0;
+  uint8_t lastRequestPin = 0;
+  uint8_t printTrigger = 0;
+  uint8_t debugCommand = 0;
+
+  (void)argument;
+
+  printf("Application task start\r\n");
+  printf("PRINT_REQ:  PG4 / INPUT_05, low active\r\n");
+  printf("PRINT_DONE: PE15 / OUTPUT_02, low active\r\n");
+  AppDebug_PrintHelp();
+  printf("Configure printer serial baud to 115200\r\n");
+  AppPrinter_InitBaud115200();
+
+  HAL_GPIO_WritePin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin, PRINT_DONE_IDLE_LEVEL);
+  AppSensor_Update();
+  lastRequestActive = AppSensor_IsPrintRequestDetected();
+  lastRequestPin = HAL_GPIO_ReadPin(PRINT_REQ_IN_GPIO_Port, PRINT_REQ_IN_Pin);
+  if (lastRequestActive)
+  {
+    printf("Power on with request active, wait request release first\r\n");
+  }
+
+  for (;;)
+  {
+    AppSensor_Update();
+    requestActive = AppSensor_IsPrintRequestDetected();
+    printTrigger = 0;
+
+    if (HAL_GPIO_ReadPin(PRINT_REQ_IN_GPIO_Port, PRINT_REQ_IN_Pin) != lastRequestPin)
+    {
+      lastRequestPin = HAL_GPIO_ReadPin(PRINT_REQ_IN_GPIO_Port, PRINT_REQ_IN_Pin);
+      printf("REQ_PIN changed to %d, Req=%d\r\n",
+             lastRequestPin,
+             AppSensor_IsPrintRequestDetected());
+    }
+
+    debugCommand = AppDebug_ReadCommand();
+
+    if (debugCommand == 'h' || debugCommand == 'H')
+    {
+      AppDebug_PrintHelp();
+    }
+    else if (debugCommand == 'b' || debugCommand == 'B')
+    {
+      printf("Set printer serial baud to 115200\r\n");
+      AppPrinter_InitBaud115200();
+    }
+    else if (debugCommand == 's' || debugCommand == 'S')
+    {
+      AppDebug_QueryPrinterStatus();                                                                                                                                              
+    }
+    else if (debugCommand == 't' || debugCommand == 'T')
+    {
+
+      AppDebug_PrintSimpleTest();
+    }
+    else if (printState == PRINT_STATE_IDLE && (debugCommand == 'p' || debugCommand == 'P'))
+    {
+      manualPrintActive = 1;
+      printTrigger = 1;
+      printf("Manual print command received\r\n");
+    }
+    else if (printState == PRINT_STATE_IDLE && requestActive && !lastRequestActive)
+    {
+      printTrigger = 1;
+      printf("External print falling edge detected\r\n");
+    }
+
+    switch (printState)
+    {
+      case PRINT_STATE_IDLE:
+        if (printTrigger)
+        {
+          osDelay(PRINT_REQ_DEBOUNCE_MS);
+          AppSensor_Update();
+          requestActive = AppSensor_IsPrintRequestDetected() || manualPrintActive;
+
+          if (requestActive)
+          {
+            printf("Print request active, send ZPL\r\n");
+            HAL_GPIO_WritePin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin, PRINT_DONE_IDLE_LEVEL);
+            AppPrinter_TestPrint();
+
+            osDelay(PRINT_MIN_TIME_MS);
+
+            printf("Wait printer done by ~HS\r\n");
+            if (AppPrinter_WaitDone(PRINT_DONE_TIMEOUT_MS, PRINT_DONE_POLL_MS))
+            {
+              printf("Printer done detected\r\n");
+            }
+            else
+            {
+              printf("Printer done wait timeout, check printer state\r\n");
+            }
+
+            HAL_GPIO_WritePin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin, PRINT_DONE_ACTIVE_LEVEL);
+            printf("Print done output active, wait request release\r\n");
+            printState = PRINT_STATE_WAIT_RELEASE;
+          }
+        }
+        break;
+
+      case PRINT_STATE_WAIT_RELEASE:
+        if (manualPrintActive)
+        {
+          osDelay(1000);
+          manualPrintActive = 0;
+          HAL_GPIO_WritePin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin, PRINT_DONE_IDLE_LEVEL);
+          printf("Manual print done output idle\r\n");
+          printState = PRINT_STATE_IDLE;
+        }
+        else if (!AppSensor_IsPrintRequestDetected())
+        {
+          HAL_GPIO_WritePin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin, PRINT_DONE_IDLE_LEVEL);
+          printf("Print request released, done output idle\r\n");
+          printState = PRINT_STATE_IDLE;
+        }
+        break;
+
+      default:
+        printState = PRINT_STATE_IDLE;
+        HAL_GPIO_WritePin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin, PRINT_DONE_IDLE_LEVEL);
+        break;
+    }
+
+    lastRequestActive = requestActive;
+
+    if (osKernelGetTickCount() - lastDebugTick >= 500)
+    {
+      lastDebugTick = osKernelGetTickCount();
+
+      printf("State=%d REQ_PIN=%d Req=%d DoneOut=%d\r\n",
+             printState,
+             HAL_GPIO_ReadPin(PRINT_REQ_IN_GPIO_Port, PRINT_REQ_IN_Pin),
+             AppSensor_IsPrintRequestDetected(),
+             HAL_GPIO_ReadPin(PRINT_DONE_OUT_GPIO_Port, PRINT_DONE_OUT_Pin));
+    }
+
+    osDelay(1);
+  }
+}
