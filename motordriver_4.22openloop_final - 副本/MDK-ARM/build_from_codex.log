@@ -1,0 +1,31 @@
+*** Using Compiler 'V5.06 update 7 (build 960)', folder: 'E:\Keil5\ARM\ARMCC\Bin'
+Build target 'motordriver'
+compiling main.c...
+../Application/encoder.h(41): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Application/FOC.h(80): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Application/motion_trap2.h(149): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Application/pid.h(42): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Application/connecting.h(22): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Application/feeder.h(52): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Application/led_task.h(12): warning:  #1-D: last line of file ends without a newline
+  #endif
+../Core/Src/main.c(1204): warning:  #550-D: variable "pulse_ff_rpm"  was set but never used
+                  float pulse_ff_rpm;
+../Core/Src/main.c(1206): warning:  #550-D: variable "pulse_delta"  was set but never used
+                  int32_t pulse_delta;
+../Core/Src/main.c(186): warning:  #550-D: variable "g_pulse_follow_pos_err_turns"  was set but never used
+  static float g_pulse_follow_pos_err_turns = 0.0f;
+../Core/Src/main.c(187): warning:  #550-D: variable "g_pulse_follow_speed_cmd_rpm"  was set but never used
+  static float g_pulse_follow_speed_cmd_rpm = 0.0f;
+../Core/Src/main.c: 11 warnings, 0 errors
+linking...
+Program Size: Code=36772 RO-data=640 RW-data=4716 ZI-data=11444  
+FromELF: creating hex file...
+"motordriver\motordriver.axf" - 0 Error(s), 11 Warning(s).
+Build Time Elapsed:  00:00:03
