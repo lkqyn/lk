@@ -819,43 +819,61 @@ void CH1_CCW(void *pv)
 void CH2_CW(void *pv)
 {
     ADDR_6000_L[20] = 0;
-    
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Other motors are disabled.", 26);
+#else
     MC_motorMoveForever(1,0);
+#endif
 }
 
 void CH2_CCW(void *pv)
 {
     ADDR_6000_L[21] = 0;
-    
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Other motors are disabled.", 26);
+#else
     MC_motorMoveForever(1,1);
+#endif
 }
 
 void CH3_CW(void *pv)
 {
     ADDR_6000_L[22] = 0;
-    
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Other motors are disabled.", 26);
+#else
     MC_motorMoveForever(2,0);
+#endif
 }
 
 void CH3_CCW(void *pv)
 {
     ADDR_6000_L[23] = 0;
-    
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Other motors are disabled.", 26);
+#else
     MC_motorMoveForever(2,1);
+#endif
 }
 
 void CH4_CW(void *pv)
 {
     ADDR_6000_L[24] = 0;
-    
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Other motors are disabled.", 26);
+#else
     MC_motorMoveForever(3,0);
+#endif
 }
 
 void CH4_CCW(void *pv)
 {
     ADDR_6000_L[25] = 0;
-    
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Other motors are disabled.", 26);
+#else
     MC_motorMoveForever(3,1);
+#endif
 }
 
 /**
@@ -1074,6 +1092,10 @@ void start_mainGive(void *pv)
 
 	if(systemPara.RunStatus == 0)
 	{
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+		systemPara.givenOK = 0;
+		systemPara.givenOnceTriggerByUIorIO = 1;
+#else
 		if(systemPara.givenOK == 1)
 		{
 			if(systemPara.Language == 0)
@@ -1086,6 +1108,7 @@ void start_mainGive(void *pv)
 //			systemPara.givenOnceTriggerByUIorIO = 1;
 			systemPara.RSTOnceTriggerByUIorIO = 1;
 		}
+#endif
 	}
 	else
 	{
@@ -1099,6 +1122,10 @@ void start_mainGive(void *pv)
 void start_mainCut(void *pv)
 {
 	ADDR_6000_L[43] = 0;
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Cut action is disabled.", 23);
+	return;
+#endif
 
 	if(systemPara.status == STATUS_FREERUN)
 	{
@@ -1151,6 +1178,23 @@ void start_mainCut(void *pv)
 void start_mainRst(void *pv)
 {
 	ADDR_6000_L[44] = 0;
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	if(systemPara.Initstatus == STATUS_UNINIT)
+	{
+		CANT_SWITCH_PAGE_MESSAGE0();
+		return;
+	}
+	if(systemPara.RunStatus == 0)
+	{
+		systemPara.doGome = 1;
+		GUI_mainMessageDisp("Feeder homing started.", 22);
+	}
+	else
+	{
+			CANT_SWITCH_PAGE_MESSAGE2();
+	}
+	return;
+#endif
 
 	if(systemPara.status == STATUS_FREERUN)
 	{
@@ -1236,17 +1280,26 @@ void start_DebugGive(void *pv)
 
 	if(systemPara.RunStatus == 0)
 	{
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+		systemPara.givenOK = 0;
+		systemPara.givenOnceTriggerByUIorIO = 1;
+#else
 		systemPara.RSTOnceTriggerByUIorIO = 1;
+#endif
 	}
 	else
 	{
-			CANT_SWITCH_PAGE_MESSAGE2();
+		CANT_SWITCH_PAGE_MESSAGE2();
 	}
 
 }
 void start_DebugCut(void *pv)
 {
 	ADDR_6000_L[10] = 0;
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Cut debug is disabled.", 22);
+	return;
+#endif
 	if(systemPara.Initstatus == STATUS_UNINIT)
 	{
 			CANT_SWITCH_PAGE_MESSAGE0();
@@ -1281,6 +1334,10 @@ void start_DebugCut(void *pv)
 void start_DebugRst(void *pv)
 {
 	ADDR_6000_L[13] = 0;
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	GUI_mainMessageDisp("Reset debug is disabled.", 24);
+	return;
+#endif
 	if(systemPara.Initstatus == STATUS_UNINIT)
 	{
 		CANT_SWITCH_PAGE_MESSAGE0();

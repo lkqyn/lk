@@ -1,6 +1,16 @@
 #ifndef _SYSCONFIG_H_
 #define _SYSCONFIG_H_
 
+/*
+ * Feeder-motor-only test mode:
+ * - Initialization only enables and homes GIVEN_MOTOR.
+ * - Cutter, unwind/rewind motors, cylinders and vacuum are bypassed.
+ * - Feed buttons directly start a feeder move.
+ * - Input 2 is treated as a running safety limit.
+ * Comment CONF_GIVEN_MOTOR_TEST_ONLY to restore the normal machine flow.
+ */
+#define     CONF_GIVEN_MOTOR_TEST_ONLY
+
 // 加速度 单位: Hz/(10ms)
 #define     CONF_GM_ACC          300
 #define     CONF_GM_DEC          1000

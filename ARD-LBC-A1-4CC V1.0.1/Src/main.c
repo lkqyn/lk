@@ -129,12 +129,15 @@ void task(void)
 	
 
 	ChuShiHua(0);
+
+#ifndef CONF_GIVEN_MOTOR_TEST_ONLY
 	flTask_handler(0);
 
 	if(systemPara.isUpShouSensorEnable)
 	{
 		slUpTask_handler(0);
 	}
+#endif
 
 	switch(systemPara.status)
 	{
@@ -145,10 +148,14 @@ void task(void)
 			if(EXIO_getInput(3) == 1)
 			{
 				SL_Step_task(0);
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+				GoHome_step(0);
+#else
 				Shut_vacuum();
 				CutLable_Step_level(0);
 				RST_Step_task(0);
 				Detect_vacuum();
+#endif
 			}
 			else
 			{
@@ -167,18 +174,24 @@ void task(void)
 			systemPara.givenOnceTriggerByUIorIO = 1;
 		}
 		SL_Step_task(0);
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+		GoHome_step(0);
+#else
 		CutLable_Step_RST(0);
 		CutLable_Step_level(0);
 		RST_Step_task(0);
 		GoHome_step(0);
 		GoHome_CutLable(0);
 		Shut_vacuum();
+#endif
 		break;
 	case STATUS_FREERUN:
+#ifndef CONF_GIVEN_MOTOR_TEST_ONLY
 		if(systemPara.Initstatus == 1)
 		{
 			KongPaoMoShi(0);
 		}
+#endif
 		break;
 	}
 

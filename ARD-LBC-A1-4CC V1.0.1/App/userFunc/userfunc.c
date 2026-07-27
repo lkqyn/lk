@@ -569,6 +569,65 @@ void SL_Step_task(void *pv)
 	uint32_t offsetPulseCount;
 	uint32_t distance;
 
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+	/*
+	 * Dedicated feeder-only state machine. It intentionally bypasses all
+	 * cutter/cylinder/reset/material preconditions used by the full machine.
+	 */
+	switch(OLM_SL_step)
+	{
+		case 0:
+			if(!systemPara.givenOnceTriggerByUIorIO || systemPara.RunStatus != 0)
+			{
+				systemPara.givenOnceTriggerByUIorIO = 0;
+				return;
+			}
+			systemPara.RunStatus = 2;
+			systemPara.SLOK = 0;
+			systemPara.givenOK = 0;
+			GUI_mainMessageDisp("Start feeder test.", 18);
+			OLM_SL_step = 1;
+			break;
+
+		case 1:
+			distance = (ADDR_5000_H[1] << 8) | ADDR_5000_L[1];
+			systemPara.SLmode = 0;
+			MC_motorMoveDistance(GIVEN_MOTOR, 1, distance);
+			OLM_SL_step = 2;
+			break;
+
+		case 2:
+			if(motor_ch[GIVEN_MOTOR].status == Motor_Stop)
+			{
+				OLM_SL_step = 3;
+			}
+			break;
+
+		case 3:
+			if((systemPara.isFeedInPlaceEnable == 1 && IBIO_getInput(2) == 0) ||
+			   (systemPara.isFeedInPlaceEnable == 0 && IBIO_getInput(2) == 1))
+			{
+				songliao_count ++;
+				len = sprintf(str,"%d",songliao_count);
+				GUI_showText(0x8000, "        ", 8);
+				GUI_showText(0x8000, str, len);
+				GUI_mainMessageDisp("Feeder test complete.", 21);
+			}
+			else
+			{
+				GUI_mainMessageDisp("Feeder position check failed.", 29);
+				Alarm(0);
+				return;
+			}
+			systemPara.givenOnceTriggerByUIorIO = 0;
+			systemPara.givenOK = 0;
+			systemPara.RunStatus = 0;
+			OLM_SL_step = 0;
+			break;
+	}
+	return;
+#endif
+
 	switch(OLM_SL_step)
 	{
 		case 0://等待拉胶信号
@@ -1280,7 +1339,7 @@ uint8_t GoHome_step(void *pv)
 			if(!systemPara.doGome )
 			{
 				systemPara.doGome = 0;
-				return;
+				return 0;
 			}
 			if(systemPara.RunStatus != 1)//不是初始化
 				systemPara.RunStatus = 4;
@@ -1401,8 +1460,10 @@ uint8_t GoHome_step(void *pv)
 			if(systemPara.RunStatus != 1 && systemPara.status != STATUS_FREERUN)//不是初始化和空跑模式
 				systemPara.RunStatus = 0;
 			Gome_step = 0;
-			break;
+			return 1;
 	}
+
+	return 0;
 }
 
 /**
@@ -1619,6 +1680,7 @@ void ChuShiHua(void *pv)
 			Given_EN(1);
 
 			LV8731V_cmd(GIVEN_MOTOR, 1);
+#ifndef CONF_GIVEN_MOTOR_TEST_ONLY
 			LV8731V_cmd(BO_MOTOR, 1);
 
 			if(systemPara.isUpShouEnable)
@@ -1627,6 +1689,7 @@ void ChuShiHua(void *pv)
 				LV8731V_cmd(DOWN_MOTOR, 1);
 			if(systemPara.isAutoLetMetalEnable)
 				LV8731V_cmd(LET_MOTOR, 1);
+#endif
 
 			GUI_runStatusDisp(0);
 			systemPara.RunStatus = 1;
@@ -1643,7 +1706,12 @@ void ChuShiHua(void *pv)
 			systemPara.LackMaterral = 1;
 			GUI_mainMessageDisp("清除交互信号.", 13);
 			delay_ms(100);
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+			/* Skip cylinders and cutter; continue at feeder homing. */
+			Init_step = 11;
+#else
 			Init_step ++;
+#endif
 			break;
 		case 2:
 			if(PTZK_Action(1) == 0)
@@ -1713,7 +1781,11 @@ void ChuShiHua(void *pv)
 				}
 			}
 			else
+#ifdef CONF_GIVEN_MOTOR_TEST_ONLY
+				Init_step = 16;
+#else
 				Init_step ++;
+#endif
 			break;
 		case 13:
 			if(JL_Action(0) == 0)
