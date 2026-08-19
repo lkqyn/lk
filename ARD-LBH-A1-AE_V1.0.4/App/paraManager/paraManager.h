@@ -1,0 +1,176 @@
+/*
+ * Copyright (c) 2006-2019, RT-Thread Development Team
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Change Logs:
+ * Date           Author       Notes
+ * 2020-01-04     ylj       the first version
+ */
+#ifndef APPLICATIONS_PARAMANAGER_PARAMANAGER_H_
+#define APPLICATIONS_PARAMANAGER_PARAMANAGER_H_
+
+#include "stm32f1xx_hal.h"
+
+uint16_t PARA_readParameter(uint16_t addr);
+void PARA_writeParameter(uint16_t addr,uint16_t data);
+float PARA_read(uint8_t addr);
+void PARA_writeParameter8bit(uint16_t addr,uint8_t high,uint8_t low);
+void PARA_setPassword(uint8_t which,char *pw);
+void PARA_setPasswordInt(uint8_t which,uint32_t pw);
+
+#define ADDR5000_NUM        28
+#define ADDR6000_NUM        49
+#define ADDR7000_NUM        6
+
+typedef struct _systemPara
+{
+    uint8_t logginStatus;   			///< 0-未登录; 1-尝试User登录; 2-尝试Vendor登录; 11-User登录成功; 12-Vendor登录成功; 22-Super登录
+    uint8_t passwordStatus; 			///< 输入密码状态0未输入
+    char userPassword[6];				///< 用户密码
+    char vendorPassword[6];				///< 厂商密码
+    char superPassword[6];  			///< 超级密码
+    uint8_t status;         			///< 运行状态 0-; 1-生产模式; 2-调试模式; 3- 空跑模式
+    uint8_t Language;					///	< 语言：0 中文  1 英文
+    uint8_t Initstatus;         		///< 运行状态 0-未初始化; 1-初始化完成;
+    uint8_t RunStatus;					///< 0空闲; 1初始化;2送料;3后撤4剥刀复位
+    uint8_t isWorkTaskRun;  			///< 工作线程是否在运行. 0-未运行; 1-在运行.
+    uint8_t sensorChosen;   			///< 感应器选择 1-下光纤感应器; 2-上光纤感应器; 3-定长模式
+    uint8_t givenMode;     				///< 送料模式 1-有料不可送; 2-有料可送
+    uint8_t givenOnceTriggerByUIorIO;	///< 触发一次送料,1：下光纤，2：上光纤，3：定长
+    uint8_t pauseOnceTriggerByUIorIO;
+    uint8_t givenOnceOK;				///< 触发一次送料完成
+    uint8_t BLOnceTriggerByUIorIO;		///< 触发一次剥料
+    uint8_t BLOnceOK;					///< 触发一次剥料完成
+    uint8_t HCOnceTriggerByUIorIO;		///< 触发一次剥料
+    uint8_t HCOnceOK;					///< 触发一次剥料完成
+    uint8_t HCTwoOK;					///< 触发2次剥料完成
+    uint8_t RSTOnceTriggerByUIorIO;		///< 触发一次剥刀复位
+    uint8_t RSTOnceOK;					///< 触发一次复位完成
+    uint8_t STOPOnceTriggerByUIorIO;	///< 触发一次停止
+    uint8_t AddMetalOnceTriggerByUIorIO;///< 触发一次换料动作
+    uint8_t letOnceTrigger;				///< 触发一次放料
+    uint8_t refreshMatalUI;				///< 更新有无料UI
+    uint8_t isAutoLetMetalEnable;		///< 自动放料功能是否使能
+    uint8_t isUpShouEnable;				///< 自动上收料是否使能
+    uint8_t isDownShouEnable;			///< 自动下收料是否使能
+    uint8_t isAutoSongEnable;			///< 自动送料是否使能
+    uint8_t isCylinderSensorEnable;		///< 传感器气缸是否使能
+    uint8_t isUpShouSensorEnable;		///< 上收料传感器是否使能:1双感应器2单感应器0无感应器
+    uint8_t isDownShouSensorEnable;		///< 下收料传感器是否使能:1双感应器2单感应器0无感应器
+    uint8_t isShouStopSensorEnable;		///< 收料单独停止传感器是否使能
+    uint8_t isRSTAutoSongEnable;		///< 复位自动送料是否使能
+    uint8_t isCloseHCEnable;			///< 关闭后撤功能
+	uint8_t isLackMaterral_NC;			///< 1，缺料使用常开感应器
+    uint8_t isUpSensorIsRealtime;		///< 上光纤实时输出有料信号
+    uint8_t isLowspeedSensorEnable;		///< 送料减速传感器
+    uint8_t isGivenEndNoAlarmEnable;	///< 送料限位走完不报警
+    uint8_t isInEmergencyStopEnable;	///< 使用内部急停
+    uint8_t isInitSwOnLINEEnable;		///< 使用外部初始化信号切换联机模式
+    uint8_t isUpSensorDownWichoutEnable;///< 上光纤检测，下光纤检测有无
+    uint8_t LowSpeedTrigger;			///<1没有检测到，0慢速送料感应器触发   ，2物料检测感应器触发
+    uint8_t MotorGivenDir;				///< 送料电机方向设置
+    uint8_t MotorLetDir;				///< 放料电机方向设置
+    uint8_t MotorBoDir;					///< 剥料电机方向设置
+    uint8_t MotorShouDir;				///< 收料电机方向设置
+    uint8_t doInit;						///< 执行初始化
+    uint8_t INITOK;						///<初始化完成
+	uint8_t doGohome;					//回原点
+	uint8_t doGohomeOK;					//回原点完成
+    uint8_t isMetalOnDeck;				///< 是否有料
+    uint8_t bodaoGoBack;				///< 剥刀换料后撤标志位
+	uint8_t AlarmFlag;					///< 报警标志位
+    uint8_t Err;
+    uint8_t Page;						//页面序号
+    uint8_t UpStatus;					//上收料状态，0 停止，1，正转启动，2反转启动
+    uint8_t DownStatus;					//下收料状态，0 停止，1，启动
+    uint8_t FLStatus;					//放料料状态，0 停止，1，启动
+	uint8_t RSTmode;					//0,距离模式，1传感模式,检查远点 2传感模式,避开原点
+	uint8_t SLmode;						//0,距离模式，1传感模式
+	uint8_t FLmode;						//0,距离模式，1传感模式
+	uint8_t UPSLmode;					//0,距离模式，1传感模式
+	uint8_t ChkSensorLevel;				//0，无料 1检测到有料，
+	uint8_t LackMaterral;				//0，缺料 1有料，
+	uint8_t BD_open;					//1，打开 1关闭，
+	uint8_t Debug;						//1,当前页面为单步调试页面 0，当前页面为主页面
+	uint8_t Platform_flagH;
+	uint8_t Platform_flagL;
+	uint8_t ChangeOver;					//0,换料未完成 1换料完成
+	uint8_t AdjustGivenOK;				//0，送料微调未完成 1 送料微调完成
+	uint8_t AdjustStripOK;				//0，剥刀微调未完成 1 剥刀微调完成
+    volatile uint8_t fiberNo;			///< 光纤编号
+}SystemPara;
+
+#define     STATUS_UNINIT           0
+#define     STATUS_ONLINE           1
+#define     STATUS_AUTO             2
+#define     STATUS_FREERUN          3
+
+typedef struct _controlPara
+{
+    float givenSpeed;           					///< 送料速度
+    float givenDistance;        					///< 送料限位、行程
+    int32_t givenDistancePulseCount;            	///< 送料限位脉冲数
+    float givenLowSpeed;        					///< 送料慢速速度
+    float givenLowDistance;     					///< 送料变速位置
+    int32_t givenLowDistancePulseCount;            	///< 送料定长变速脉冲数
+    float givenOffset;          					///< 送料补偿
+    int32_t givenOffsetPulseCount;            		///< 送料偏移脉冲数
+
+    float letSpeed;             					///< 放料速度
+    float letDistance;          					///< 放料行程
+
+    float boSpeed;              					///< 剥料速度
+    float boLowSpeed;           					///< 慢速剥料速度
+    float boaRstSpeed;          					///< 剥料复位速度
+    float boDistance;          						///< 剥料行程1
+    float boDistance2;          					///< 剥料行程2
+    float boLowDistance;        					///< 慢速剥料行程
+
+    float shouSpeed;            					///< 收料速度
+    float shouDistance;         					///< 收料行程
+    float oriSpeed;             					///< 回原点速度
+    float oriOffset;            					///< 原点偏移
+    int32_t oriOffsetPulseCount;           	 		///< 原点偏移脉冲数
+
+    float HLDistance;
+//    float givenRound2mm;             				///< 送料电机电流
+//    float givenMS;              					///< 送料电机细分
+//    float letCur;               					///< 放料电机电流
+//    float letMS;                					///< 放料电机细分
+//    float boRound2mm;                				///< 剥料电机电流
+//    float boMS;                 					///< 剥料电机细分
+//    float shouCur;              					///< 收料电机电流
+//    float shouMS;               					///< 收料电机细分
+}ControlPara;
+
+#define     PARA_GIVENSPEED     0
+#define     PARA_GIVENOFFSET    1
+#define     PARA_LETSPEED       2
+#define     PARA_LETOFFSET      3
+#define     PARA_BOSPEED        4
+#define     PARA_BODISTANCE     5
+#define     PARA_SHOUSPEED      6
+#define     PARA_SHOUDISTANCE   7
+#define     PARA_ORISPEED       8
+#define     PARA_ORIOFFSET      9
+#define     PARA_GIVENCUR       10
+#define     PARA_GIVENMS        11
+#define     PARA_LETCUR         12
+#define     PARA_LETMS          13
+#define     PARA_BOCUR          14
+#define     PARA_BOMS           15
+#define     PARA_SHOUCUR        16
+#define     PARA_SHOUMS         17
+
+extern volatile SystemPara systemPara;
+extern volatile ControlPara controlPara;
+
+extern uint8_t ADDR_5000_L[ADDR5000_NUM];
+extern uint8_t ADDR_5000_H[ADDR5000_NUM];
+extern uint8_t ADDR_6000_L[ADDR6000_NUM];
+extern uint8_t ADDR_6000_H[ADDR6000_NUM];
+extern uint8_t ADDR_7000_L[ADDR7000_NUM];
+extern uint8_t ADDR_7000_H[ADDR7000_NUM];
+
+#endif /* APPLICATIONS_PARAMANAGER_PARAMANAGER_H_ */
