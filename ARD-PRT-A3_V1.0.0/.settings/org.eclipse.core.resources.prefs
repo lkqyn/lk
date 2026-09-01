@@ -1,0 +1,12 @@
+eclipse.preferences.version=1
+encoding//App/MotorCtrl/motorctrl.c=GBK
+encoding//App/MotorCtrl/motorctrl.h=GBK
+encoding//App/eventHandler/eventHandler.c=GBK
+encoding//App/inputScan=GBK
+encoding//App/paraManager/paraManager.c=GBK
+encoding//App/sysConfig/sysconfig.h=GBK
+encoding//App/userFunc/userfunc.c=GBK
+encoding//App/userFunc/userfunc.h=GBK
+encoding//Driver/Dwin/gui.c=GBK
+encoding//Src/isr.c=gbk
+encoding//Src/main.c=GBK
