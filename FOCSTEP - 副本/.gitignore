@@ -1,0 +1,14 @@
+# Keil generated output
+MDK-ARM/FOCSTEP/
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.bak
+MDK-ARM/*.Bak
+
+# Editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+*.user
+*.tmp
+*.log
