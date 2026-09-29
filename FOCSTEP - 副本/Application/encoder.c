@@ -18,6 +18,7 @@
 #define ENCODER_SPEED_ZERO_TIMEOUT_MS        (100U)
 #define ENCODER_SPEED_FILTER_TIME_CONSTANT_MS (4U)
 #define ENCODER_MRPM_NUMERATOR               (60000L * 1000L)
+#define ENCODER_FIXED_2MS_WINDOW_SIZE         (2U)
 #define ENCODER_FIXED_5MS_WINDOW_SIZE         (5U)
 #define ENCODER_FIXED_10MS_WINDOW_SIZE        (10U)
 
@@ -31,6 +32,11 @@ typedef struct
     volatile int32_t raw_speed_mrpm;
     volatile int32_t filtered_speed_mrpm;
     volatile int32_t sample_delta_count;
+    volatile int32_t fixed_2ms_speed_mrpm;
+    int32_t delta_2ms_buffer[ENCODER_FIXED_2MS_WINDOW_SIZE];
+    int32_t delta_2ms_sum;
+    uint8_t delta_2ms_index;
+    uint8_t delta_2ms_count;
     volatile int32_t fixed_5ms_speed_mrpm;
     volatile int32_t fixed_10ms_speed_mrpm;
     int32_t delta_5ms_buffer[ENCODER_FIXED_5MS_WINDOW_SIZE];
@@ -67,12 +73,20 @@ static int32_t Encoder_DeltaToSpeedMrpm(int32_t delta_count,
          (int64_t)period_ms));
 }
 
-/* 清空仅用于整定比较的 5 ms/10 ms 固定测速窗口。 */
+/* 清空2 ms控制窗口及保留作对照的5 ms/10 ms窗口。 */
 static void Encoder_ResetFixedWindowDiagnostics(void)
 {
     uint32_t index;
 
     s_encoder.sample_delta_count = 0L;
+    s_encoder.fixed_2ms_speed_mrpm = 0L;
+    s_encoder.delta_2ms_sum = 0L;
+    s_encoder.delta_2ms_index = 0U;
+    s_encoder.delta_2ms_count = 0U;
+    for (index = 0U; index < ENCODER_FIXED_2MS_WINDOW_SIZE; index++)
+    {
+        s_encoder.delta_2ms_buffer[index] = 0L;
+    }
     s_encoder.fixed_5ms_speed_mrpm = 0L;
     s_encoder.fixed_10ms_speed_mrpm = 0L;
     s_encoder.delta_5ms_sum = 0L;
@@ -92,10 +106,26 @@ static void Encoder_ResetFixedWindowDiagnostics(void)
     }
 }
 
-/* 以 1 ms 位置差累积固定窗口测速诊断样本。 */
+/* 共用1 ms位置采样更新各窗口；启动不足窗口长度时按实际样本数换算。 */
 static void Encoder_UpdateFixedWindowDiagnostics(int32_t sample_delta)
 {
     s_encoder.sample_delta_count = sample_delta;
+
+    s_encoder.delta_2ms_sum -=
+        s_encoder.delta_2ms_buffer[s_encoder.delta_2ms_index];
+    s_encoder.delta_2ms_buffer[s_encoder.delta_2ms_index] = sample_delta;
+    s_encoder.delta_2ms_sum += sample_delta;
+    s_encoder.delta_2ms_index++;
+    if (s_encoder.delta_2ms_index >= ENCODER_FIXED_2MS_WINDOW_SIZE)
+    {
+        s_encoder.delta_2ms_index = 0U;
+    }
+    if (s_encoder.delta_2ms_count < ENCODER_FIXED_2MS_WINDOW_SIZE)
+    {
+        s_encoder.delta_2ms_count++;
+    }
+    s_encoder.fixed_2ms_speed_mrpm = Encoder_DeltaToSpeedMrpm(
+        s_encoder.delta_2ms_sum, s_encoder.delta_2ms_count);
 
     s_encoder.delta_5ms_sum -=
         s_encoder.delta_5ms_buffer[s_encoder.delta_5ms_index];
@@ -355,10 +385,10 @@ int32_t Encoder_GetPositionCountFast(void)
         (int32_t)__HAL_TIM_GET_COUNTER(&htim2));
 }
 
-/* 返回控制环采用的 5 ms 窗口机械速度。 */
+/* 返回统一供速度PI、位置阻尼及弱磁使用的2 ms窗口机械速度。 */
 int32_t Encoder_GetControlSpeedMrpmFast(void)
 {
-    return s_encoder.fixed_5ms_speed_mrpm;
+    return s_encoder.fixed_2ms_speed_mrpm;
 }
 
 /* 原子复制并行测速诊断快照。 */
@@ -373,6 +403,7 @@ void Encoder_GetSpeedDiagnosticFast(Encoder_SpeedDiagnostic_t *diagnostic)
     diagnostic->adaptive_speed_mrpm = s_encoder.filtered_speed_mrpm;
     diagnostic->fixed_5ms_speed_mrpm = s_encoder.fixed_5ms_speed_mrpm;
     diagnostic->fixed_10ms_speed_mrpm = s_encoder.fixed_10ms_speed_mrpm;
+    diagnostic->fixed_2ms_speed_mrpm = s_encoder.fixed_2ms_speed_mrpm;
 }
 
 /* 返回后台更新的编码器状态快照。 */

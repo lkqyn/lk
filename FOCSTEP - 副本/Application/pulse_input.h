@@ -29,6 +29,32 @@
 #define PULSE_INPUT_CONTROL_MODE \
     PULSE_INPUT_CONTROL_MODE_TRAJECTORY
 
+/* 仅供诊断：最近一次非零轨迹速度被清零的上下文，计数自使能起累计。 */
+typedef struct
+{
+    uint32_t count;
+    uint32_t pulse_count;
+    uint32_t tick_ms;
+    uint32_t interval_ticks; /* TIM3 tick，10.5 MHz。 */
+    uint32_t elapsed_ticks;  /* 判停使用的旧STEP快照年龄，不重新取样。 */
+    int32_t velocity_cps;    /* 清零前的内部速度，count/s。 */
+} PulseInput_ResetDiagnostic_t;
+
+/* 末STEP后停车事件：同一TIM3时基；ticks只在主循环换算为微秒。
+ * flags: 1判停、2制动目标、4首次制动采样、8连续3拍确认、16超时、
+ * 32判停时目标已制动、64判停时最近电流采样已制动。方向以末STEP为准。 */
+typedef struct
+{
+    uint32_t stop_ticks;
+    uint32_t target_ticks;
+    uint32_t measured_ticks;
+    uint32_t confirmed_ticks;
+    uint32_t flags;
+    uint32_t pulse_count;
+    int32_t current_at_stop_ma;
+    int32_t direction;
+} PulseInput_StopTiming_t;
+
 typedef struct
 {
     /*
@@ -86,6 +112,9 @@ typedef struct
     /* enabled：脉冲控制链已启动；input_enabled：当前 PC9 是否允许接收。 */
     uint8_t enabled;
     uint8_t input_enabled;
+    PulseInput_ResetDiagnostic_t timeout_reset;
+    PulseInput_ResetDiagnostic_t boundary_reset;
+    PulseInput_StopTiming_t stop_timing;
 } PulseInput_State_t;
 
 void PulseInput_Init(void);
@@ -96,9 +125,6 @@ void PulseInput_Init(void);
 uint8_t PulseInput_Start(void);
 /* 由TIM3_CH2输入捕获回调调用；capture_count是边沿硬件锁存值。 */
 void PulseInput_OnStepCaptured(uint16_t capture_count);
-/* 仅供单板脉冲发生器使用：复用同一计数核心，但不读取物理 DIR/EN 引脚。 */
-void PulseInput_OnSimulatedStepCaptured(uint16_t capture_count,
-                                        int8_t direction);
 void PulseInput_OnCaptureTimerOverflow(void);
 void PulseInput_Enable(void);
 void PulseInput_Disable(void);
@@ -110,5 +136,11 @@ void PulseInput_Tick250us(void);
 /* 由 1 kHz 节拍调用：换算最近 STEP 周期的诊断速度并更新统计数据。 */
 void PulseInput_Tick1ms(void);
 const volatile PulseInput_State_t *PulseInput_GetState(void);
+/* 只读诊断钩子：成功写入Iq目标后、20kHz得到新Iq采样后分别调用。 */
+void PulseInput_RecordCurrentTarget(int32_t iq_ma);
+void PulseInput_RecordCurrentSample(int32_t iq_ma);
+
+void PulseInput_SelectSimulatedSource(uint8_t enabled);
+void PulseInput_OnSimulatedStepCaptured(uint16_t capture_count, int8_t direction);
 
 #endif

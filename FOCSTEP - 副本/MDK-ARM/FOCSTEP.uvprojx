@@ -1070,16 +1070,6 @@
               <FilePath>..\Application\position_loop.h</FilePath>
             </File>
             <File>
-              <FileName>pulse_input.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Application\pulse_input.c</FilePath>
-            </File>
-            <File>
-              <FileName>pulse_input.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Application\pulse_input.h</FilePath>
-            </File>
-            <File>
               <FileName>pulse_generator.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Application\pulse_generator.c</FilePath>
@@ -1088,6 +1078,16 @@
               <FileName>pulse_generator.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Application\pulse_generator.h</FilePath>
+            </File>
+            <File>
+              <FileName>pulse_input.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Application\pulse_input.c</FilePath>
+            </File>
+            <File>
+              <FileName>pulse_input.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Application\pulse_input.h</FilePath>
             </File>
           </Files>
         </Group>

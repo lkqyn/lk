@@ -12,3 +12,9 @@ Desktop.ini
 *.user
 *.tmp
 *.log
+
+# Local backups and capture data (kept outside version control)
+/backup/
+/position_*.csv
+/position_*.txt
+*.lst

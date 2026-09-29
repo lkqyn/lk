@@ -10,15 +10,17 @@
 #include "encoder.h"
 #include "motor_pwm.h"
 #include "motor_test.h"
+#include "motor_parameters.h"
 #include "power_monitor.h"
 #include "position_loop.h"
-#include "pulse_generator.h"
 #include "pulse_input.h"
+#include "pulse_generator.h"
 #include "rotor_alignment.h"
 #include "speed_loop.h"
 #include "usbd_cdc_if.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -42,12 +44,8 @@
 #define DEBUG_VOFA_POSITION_DIAGNOSTIC_CHANNEL_COUNT (16U)
 #define DEBUG_VOFA_POSITION_DIAGNOSTIC_FRAME_SIZE \
     ((DEBUG_VOFA_POSITION_DIAGNOSTIC_CHANNEL_COUNT + 1U) * sizeof(float))
-/*
- * 脉冲末端验证：14路数据加JustFloat帧尾为60字节，按1kHz发送。
- * 避免64字节整数包触发CDC额外的零长度包。
- * 6~10路报告STEP捕获中断快照；11路为遥测缺失计数，12~13路为到位测量。
- */
-#define DEBUG_VOFA_PULSE_CHANNEL_COUNT (14U)
+/* 18-channel pulse/endpoint JustFloat frame, 76 bytes, attempted at 1 kHz. */
+#define DEBUG_VOFA_PULSE_CHANNEL_COUNT (18U)
 #define DEBUG_VOFA_PULSE_FRAME_SIZE \
     ((DEBUG_VOFA_PULSE_CHANNEL_COUNT + 1U) * sizeof(float))
 
@@ -58,7 +56,7 @@
     ((DEBUG_VOFA_POSITION_CAPTURE_CHANNEL_COUNT + 1U) * sizeof(float))
 #define DEBUG_VOFA_FRAMES_PER_USB_PACKET (1U)
 /* 共享缓冲区容量独立于单个模式帧长，避免缩短脉冲帧后其他模式越界。 */
-#define DEBUG_VOFA_TX_BUFFER_SIZE  (128U)
+#define DEBUG_VOFA_TX_BUFFER_SIZE  (288U)
 /* 兼容当前C编译器：任一发送帧超出容量时直接编译报错。 */
 typedef char Debug_VofaFrameCapacityCheck[
     ((DEBUG_VOFA_FRAME_SIZE * DEBUG_VOFA_FRAMES_PER_USB_PACKET <= DEBUG_VOFA_TX_BUFFER_SIZE) &&
@@ -126,6 +124,7 @@ typedef struct
     volatile uint16_t rx_length;
     volatile uint8_t command_ready;
     volatile uint8_t stop_requested;
+    volatile uint8_t sim_stop_requested;
     uint8_t stream_enabled;
     uint32_t last_stream_tick_ms;
     uint16_t trace_dump_index;
@@ -466,53 +465,44 @@ static void Debug_VofaBuildPositionDiagnosticFrame(uint8_t *destination)
                  sizeof(just_float_tail));
 }
 
-/*
- * 脉冲模式专用末端验证帧，固定1kHz发送。
- * 通道0~5为当前状态，6~10为最近STEP捕获中断快照；停止发脉冲后保留
- * 最后一份快照。11为遥测缺失计数，12为首次到位耗时，13为曾到位标志。
- * STEP时间由硬件锁存，编码器位置在捕获ISR读取，存在中断响应延迟。
- */
-/* 组装 STEP 输入、内部轨迹及末脉冲捕获信息的专用波形帧。 */
+/* Compact receiver telemetry; generator fields are observation only. */
 static void Debug_VofaBuildPulseFrame(uint8_t *destination)
 {
-    const volatile PulseInput_State_t *pulse = PulseInput_GetState();
-    const volatile PositionLoop_State_t *position = PositionLoop_GetState();
-    static const uint8_t just_float_tail[sizeof(float)] =
-        {0x00U, 0x00U, 0x80U, 0x7FU};
-
-    Debug_VofaWriteFloat(&destination[0U * sizeof(float)], (float)HAL_GetTick());
-    Debug_VofaWriteFloat(&destination[1U * sizeof(float)],
-                         (float)pulse->accepted_pulse_count);
-    Debug_VofaWriteFloat(&destination[2U * sizeof(float)],
-                         (float)pulse->reference_position_count);
-    Debug_VofaWriteFloat(&destination[3U * sizeof(float)],
-                         (float)position->reference_position_count);
-    Debug_VofaWriteFloat(&destination[4U * sizeof(float)],
-                         (float)position->measured_position_count);
-    Debug_VofaWriteFloat(&destination[5U * sizeof(float)],
-                         (float)(pulse->reference_position_count -
-                                 position->measured_position_count));
-    Debug_VofaWriteFloat(&destination[6U * sizeof(float)],
-                         (float)pulse->last_edge_reference_position_count);
-    Debug_VofaWriteFloat(&destination[7U * sizeof(float)],
-                         (float)pulse->last_edge_command_position_count);
-    Debug_VofaWriteFloat(&destination[8U * sizeof(float)],
-                         (float)pulse->last_edge_measured_position_count);
-    Debug_VofaWriteFloat(&destination[9U * sizeof(float)],
-                         (float)(pulse->last_edge_reference_position_count -
-                                 pulse->last_edge_measured_position_count));
-    Debug_VofaWriteFloat(&destination[10U * sizeof(float)],
-                         (float)(pulse->last_edge_reference_position_count -
-                                 pulse->last_edge_command_position_count));
-    Debug_VofaWriteFloat(&destination[11U * sizeof(float)],
-                         (float)s_vofa.pulse_dropped_samples);
-    Debug_VofaWriteFloat(&destination[12U * sizeof(float)],
-                         (float)pulse->last_edge_reach_time_us / 1000.0f);
-    Debug_VofaWriteFloat(&destination[13U * sizeof(float)],
-                         (float)pulse->last_edge_reached);
-    (void)memcpy(&destination[DEBUG_VOFA_PULSE_CHANNEL_COUNT * sizeof(float)],
-                 just_float_tail,
-                 sizeof(just_float_tail));
+    const volatile PulseInput_State_t *p = PulseInput_GetState();
+    const volatile PositionLoop_State_t *pos = PositionLoop_GetState();
+    const volatile SpeedLoop_State_t *v = SpeedLoop_GetState();
+    const volatile DqCurrentLoop_State_t *i = DqCurrentLoop_GetState();
+    const volatile PulseGenerator_State_t *g = PulseGenerator_GetState();
+    int32_t values[18];
+    uint32_t n, mask = __get_PRIMASK();
+    static const uint8_t tail[4] = {0, 0, 0x80, 0x7f};
+    __disable_irq();
+    values[0] = (int32_t)HAL_GetTick();
+    values[1] = (int32_t)p->accepted_pulse_count;
+    values[2] = p->reference_position_count;
+    values[3] = pos->reference_position_count;
+    values[4] = Encoder_GetPositionCountFast();
+    values[5] = v->target_speed_mrpm;
+    values[6] = v->measured_speed_mrpm;
+    values[7] = i->target_q_ma;
+    values[8] = i->measured_q_ma;
+    values[9] = (int32_t)g->emitted_pulse_count;
+    values[10] = g->running;
+    values[11] = p->last_edge_reach_time_us;
+    values[12] = p->last_edge_stable_time_us;
+    values[13] = p->last_edge_stable;
+    values[14] = (int32_t)s_vofa.pulse_dropped_samples;
+    values[15] = (int32_t)g->late_schedule_count;
+    values[16] = p->last_edge_reference_position_count;
+    values[17] = p->last_edge_measured_position_count;
+    if (mask == 0U) __enable_irq();
+    for (n = 0; n < 18U; n++)
+    {
+        float value = (float)values[n];
+        if (((n >= 5U) && (n <= 8U)) || (n == 11U) || (n == 12U)) value /= 1000.0f;
+        Debug_VofaWriteFloat(&destination[n * sizeof(float)], value);
+    }
+    memcpy(&destination[18U * sizeof(float)], tail, sizeof(tail));
 }
 
 /* 通道：time_ms、seq、Pos_ref、Pos_fdb、Speed_ref、Speed_fdb、Iq_ref、reached、fault。 */
@@ -589,6 +579,7 @@ uint8_t Debug_StartPulseVofa(void)
     /* 首帧在USB CDC真正就绪后发送，避免未连接主机期间虚报丢样。 */
     s_vofa.pulse_last_sample_tick_ms = 0U;
     s_vofa.transfer_in_progress = 0U;
+    s_debug.pending_text_valid = 0U;
     s_vofa.active = 1U;
     s_debug.stream_enabled = 0U;
     s_debug.trace_dump_active = 0U;
@@ -739,6 +730,9 @@ static void Debug_VofaLoop(void)
                 return;
             }
 
+            now_ms = HAL_GetTick();
+            if (now_ms == s_vofa.position_last_sample_tick_ms) return;
+            s_vofa.position_last_sample_tick_ms = now_ms;
             Debug_VofaBuildSpeedBasicFrame(s_vofa.tx_buffer);
             if (CDC_Transmit_FS(s_vofa.tx_buffer,
                                 DEBUG_VOFA_SPEED_BASIC_FRAME_SIZE) == USBD_OK)
@@ -1182,61 +1176,6 @@ static uint8_t Debug_StartPulseInput(void)
     return PulseInput_Start();
 }
 
-/* 用外部板实际的 aimFreq 启动；接收端未知总数、减速段和最终边沿。 */
-static uint8_t Debug_StartPulseGeneratorHz(uint32_t pulse_count,
-                                           uint32_t aim_frequency_hz,
-                                           int8_t direction)
-{
-    PulseGenerator_Config_t config;
-
-    if (Debug_StartPulseInput() == 0U)
-    {
-        return 0U;
-    }
-    config.total_pulse_count = pulse_count;
-    config.aim_frequency_hz = aim_frequency_hz;
-    config.direction = direction;
-    return PulseGenerator_Start(&config);
-}
-
-/* 将便利输入的目标 rpm 转为外部板 aimFreq 后启动。 */
-static uint8_t Debug_StartPulseGenerator(uint32_t pulse_count,
-                                         uint32_t aim_speed_rpm,
-                                         int8_t direction)
-{
-    uint64_t aim_frequency_hz = ((uint64_t)aim_speed_rpm * 800ULL) / 60ULL;
-
-    if (aim_frequency_hz > UINT32_MAX)
-    {
-        return 0U;
-    }
-    return Debug_StartPulseGeneratorHz(pulse_count,
-                                       (uint32_t)aim_frequency_hz,
-                                       direction);
-}
-
-/* 输出单板发生器状态；该状态不参与 PulseInput 的控制决策。 */
-static void Debug_SendPulseGeneratorState(void)
-{
-    const volatile PulseGenerator_State_t *generator =
-        PulseGenerator_GetState();
-
-    (void)snprintf(s_debug_tx_buffer,
-                   sizeof(s_debug_tx_buffer),
-                   "SIM requested=%lu emitted=%lu aim=%luHz ramp=%u dir=%d running=%u completed=%u fault=%u late=%lu max_gap=%luus\r\n",
-                   (unsigned long)generator->requested_pulse_count,
-                   (unsigned long)generator->emitted_pulse_count,
-                   (unsigned long)generator->aim_frequency_hz,
-                   (unsigned int)generator->ramp_pulse_count,
-                   (int)generator->direction,
-                   (unsigned int)generator->running,
-                   (unsigned int)generator->completed,
-                   (unsigned int)generator->fault,
-                   (unsigned long)generator->late_schedule_count,
-                   (unsigned long)generator->maximum_injection_interval_us);
-    Debug_SendText(s_debug_tx_buffer);
-}
-
 /* 输出脉冲累计位置、内部轨迹、末脉冲和到位捕获状态。 */
 static void Debug_SendPulseInputState(void)
 {
@@ -1333,6 +1272,7 @@ static uint8_t Debug_StartVofaPositionTest(int32_t relative_position_count,
     s_vofa.position_last_sample_tick_ms = 0U;
     s_vofa.position_dropped_samples = 0U;
     s_vofa.transfer_in_progress = 0U;
+    s_debug.pending_text_valid = 0U;
     s_vofa.active = 1U;
     s_debug.stream_enabled = 0U;
     s_debug.trace_dump_active = 0U;
@@ -1385,6 +1325,7 @@ static void Debug_StartVofaSpeedTest(int32_t target_speed_mrpm,
     s_vofa.speed_step_switch_ms = 0U;
     s_vofa.speed_step_target_mrpm = 0L;
     s_vofa.transfer_in_progress = 0U;
+    s_debug.pending_text_valid = 0U;
     s_vofa.active = 1U;
     s_debug.stream_enabled = 0U;
     s_debug.trace_dump_active = 0U;
@@ -1966,10 +1907,139 @@ static uint8_t Debug_StartVofaDqLive(uint8_t q_axis, int32_t target_ma)
     s_vofa.speed_position_mode = 0U;
     s_vofa.speed_basic_mode = 0U;
     s_vofa.transfer_in_progress = 0U;
+    s_debug.pending_text_valid = 0U;
     s_vofa.active = 1U;
     s_debug.stream_enabled = 0U;
     s_debug.trace_dump_active = 0U;
     s_debug.trace_perf_pending = 0U;
+    return 1U;
+}
+
+
+static void Debug_StopSimpleMode(void)
+{
+    PulseInput_Disable();
+    PositionLoop_Stop();
+    SpeedLoop_Stop();
+    MotorTest_StopDqCycle();
+    Debug_VofaStop();
+    s_debug.pending_text_valid = 0U;
+    s_debug.stream_enabled = 0U;
+}
+
+static uint8_t Debug_ProcessSimpleCommand(const char *command)
+{
+    long count, rate, direction, target;
+    char extra;
+    uint8_t curve = 0U;
+    PulseGenerator_Config_t config;
+    if (strcmp(command, "wave off") == 0)
+    {
+        Debug_VofaStop();
+        s_debug.pending_text_valid = 0U;
+        s_debug.stream_enabled = 0U;
+        return 1U;
+    }
+    if (strcmp(command, "sim stop") == 0)
+    {
+        PulseGenerator_Stop();
+        return 1U;
+    }
+    if (strcmp(command, "sim status") == 0)
+    {
+        const volatile PulseGenerator_State_t *g = PulseGenerator_GetState();
+        Debug_VofaStop();
+        s_debug.pending_text_valid = 0U;
+        (void)snprintf(s_debug_tx_buffer, sizeof(s_debug_tx_buffer),
+            "sim running=%u done=%u fault=%u sent=%lu total=%lu aim_hz=%lu late=%lu max_gap_us=%lu irq_max_ticks=%lu stamp=compare\r\n",
+            g->running, g->completed, g->fault, (unsigned long)g->emitted_pulse_count,
+            (unsigned long)g->requested_pulse_count, (unsigned long)g->aim_frequency_hz,
+            (unsigned long)g->late_schedule_count, (unsigned long)g->maximum_injection_interval_us,
+            (unsigned long)g->maximum_irq_latency_ticks);
+        Debug_SendText(s_debug_tx_buffer);
+        return 1U;
+    }
+    if (strcmp(command, "help") == 0)
+    {
+        Debug_VofaStop();
+        s_debug.pending_text_valid = 0U;
+        Debug_SendText("current id|iq MA | speed RPM | sim start COUNT RPM DIR | sim hz COUNT HZ DIR | sim stop | sim status | pulse on | pulse vofa on | wave off | stop\r\n");
+        return 1U;
+    }
+    if ((strncmp(command, "sim ", 4U) != 0) &&
+        (strncmp(command, "current ", 8U) != 0) &&
+        (sscanf(command, "speed %ld %c", &target, &extra) != 1) &&
+        (strcmp(command, "pulse on") != 0) &&
+        (strcmp(command, "pulse vofa on") != 0)) return 0U;
+    if ((RotorAlignment_IsRunning() != 0U) ||
+        (RotorAlignment_IsEncoderCalibrationRunning() != 0U) ||
+        (ElectricalAngle_GetState()->aligned == 0U))
+    {
+        if (s_vofa.active == 0U) Debug_SendText("err: wait for alignment/calibration\r\n");
+        return 1U;
+    }
+    if (strcmp(command, "pulse vofa on") == 0)
+    {
+        (void)Debug_StartPulseVofa();
+        return 1U;
+    }
+    if (strcmp(command, "pulse on") == 0)
+    {
+        PulseGenerator_Stop();
+        if (PulseInput_GetState()->enabled == 0U) Debug_StopSimpleMode();
+        PulseInput_SelectSimulatedSource(0U);
+        if (PulseInput_Start() != 0U) (void)Debug_StartPulseVofa();
+        return 1U;
+    }
+    if (sscanf(command, "speed %ld %c", &target, &extra) == 1)
+    {
+        if ((target < -3000L) || (target > 3000L)) goto invalid;
+        if (s_vofa.speed_live_mode != 0U)
+            (void)SpeedLoop_SetTargetSpeedMrpm((int32_t)target * 1000L);
+        else
+        {
+            Debug_StopSimpleMode();
+            Debug_StartVofaSpeedTest((int32_t)target * 1000L, 0U, 0U, 1U);
+        }
+        return 1U;
+    }
+    if ((sscanf(command, "current id %ld %c", &target, &extra) == 1) ||
+        (sscanf(command, "current iq %ld %c", &target, &extra) == 1))
+    {
+        uint8_t q_axis = (command[9] == 'q') ? 1U : 0U;
+        if ((target < -1000L) || (target > 1000L)) goto invalid;
+        if ((MotorTest_IsDqLive() == 0U) || (MotorTest_IsDqLiveQAxis() != q_axis))
+        {
+            if (target == 0L) goto invalid;
+            Debug_StopSimpleMode();
+        }
+        if (Debug_StartVofaDqLive(q_axis, (int32_t)target) == 0U) goto invalid;
+        return 1U;
+    }
+    curve = (sscanf(command, "sim start %ld %ld %ld %c", &count, &rate, &direction, &extra) == 3);
+    if ((curve != 0U) ||
+        (sscanf(command, "sim hz %ld %ld %ld %c", &count, &rate, &direction, &extra) == 3))
+    {
+        if ((count < 1L) || (count > 10000000L) ||
+            ((direction != 1L) && (direction != -1L)) ||
+            (rate < ((curve != 0U) ? 45L : 600L)) ||
+            (rate > ((curve != 0U) ? 3000L : 40000L)) ||
+            (PulseGenerator_IsRunning() != 0U)) goto invalid;
+        config.total_pulse_count = (uint32_t)count;
+        config.aim_frequency_hz = (curve != 0U) ? (uint32_t)rate * 800U / 60U : (uint32_t)rate;
+        config.direction = (int8_t)direction;
+        config.constant_frequency = (curve == 0U);
+        if (PulseInput_GetState()->enabled == 0U)
+        {
+            Debug_StopSimpleMode();
+            if (PulseInput_Start() == 0U) goto invalid;
+        }
+        if (PulseGenerator_Start(&config) == 0U) goto invalid;
+        (void)Debug_StartPulseVofa();
+        return 1U;
+    }
+invalid:
+    if (s_vofa.active == 0U) Debug_SendText("err: invalid command/range or busy; help\r\n");
     return 1U;
 }
 
@@ -1988,14 +2058,8 @@ static void Debug_ProcessCommand(const char *command)
     long position_kp_mrpm_per_count;
     long position_kd_mrpm_per_rpm;
     long position_limit_rpm;
-    long simulated_pulse_count;
-    long simulated_peak_speed_rpm;
-    long simulated_direction;
+    if (Debug_ProcessSimpleCommand(command) != 0U) return;
     if ((s_vofa.active != 0U) &&
-        !((s_vofa.pulse_live_mode != 0U) &&
-          ((strncmp(command, "sim start ", 10U) == 0) ||
-           (strncmp(command, "sim hz ", 7U) == 0) ||
-           (strcmp(command, "sim stop") == 0))) &&
         (strcmp(command, "vofa stop") != 0) &&
         (strcmp(command, "pulse vofa off") != 0) &&
         (strncmp(command, "vofa current ", 13U) != 0) &&
@@ -2024,7 +2088,6 @@ static void Debug_ProcessCommand(const char *command)
         (strncmp(command, "pos ", 4U) != 0) &&
         /* 脉冲模式运行期间必须允许查看计数，且可安全关闭接口。 */
         (strncmp(command, "pulse ", 6U) != 0) &&
-        (strncmp(command, "sim ", 4U) != 0) &&
         (strcmp(command, "angle observer status") != 0) &&
         (strncmp(command, "speed tune ", 11U) != 0) &&
         (strncmp(command, "vofa speed target ", 18U) != 0) &&
@@ -2079,7 +2142,6 @@ static void Debug_ProcessCommand(const char *command)
                        "speed stop | speed status | "
                        "pos tune KP KD | pos limit RPM | pos rel COUNT | pos abs COUNT | pos status | pos stop | "
                        "pulse on | pulse off | pulse status | pulse vofa on|off | "
-                       "sim start PULSE_COUNT AIM_RPM DIR | sim hz PULSE_COUNT AIM_HZ DIR | sim stop | sim status | "
                        "stream on | stream off\r\n");
     }
     else if (strcmp(command, "enc") == 0)
@@ -2341,57 +2403,6 @@ static void Debug_ProcessCommand(const char *command)
     {
         Debug_SendPulseInputState();
         Debug_SendPositionLoopState();
-    }
-    else if (sscanf(command, "sim hz %ld %ld %ld",
-                    &simulated_pulse_count,
-                    &simulated_peak_speed_rpm,
-                    &simulated_direction) == 3)
-    {
-        if ((simulated_pulse_count <= 0L) ||
-            (simulated_peak_speed_rpm < 600L) ||
-            ((simulated_direction != 1L) && (simulated_direction != -1L)) ||
-            (Debug_StartPulseGeneratorHz((uint32_t)simulated_pulse_count,
-                                         (uint32_t)simulated_peak_speed_rpm,
-                                         (int8_t)simulated_direction) == 0U))
-        {
-            Debug_SendText("err: sim hz requires valid PULSE_COUNT AIM_HZ DIR and idle generator\r\n");
-        }
-        else
-        {
-            Debug_SendText("ok: external-table SIM started; receiver is not told the final step\r\n");
-            Debug_SendPulseGeneratorState();
-        }
-    }
-    else if (sscanf(command, "sim start %ld %ld %ld",
-                    &simulated_pulse_count,
-                    &simulated_peak_speed_rpm,
-                    &simulated_direction) == 3)
-    {
-        if ((simulated_pulse_count <= 0L) ||
-            (simulated_peak_speed_rpm <= 0L) ||
-            ((simulated_direction != 1L) && (simulated_direction != -1L)) ||
-            (Debug_StartPulseGenerator((uint32_t)simulated_pulse_count,
-                                       (uint32_t)simulated_peak_speed_rpm,
-                                       (int8_t)simulated_direction) == 0U))
-        {
-            Debug_SendText("err: sim start requires valid PULSE_COUNT AIM_RPM DIR and idle generator\r\n");
-        }
-        else
-        {
-            Debug_SendText("ok: sim started; receiver is not told the final step\r\n");
-            Debug_SendPulseGeneratorState();
-        }
-    }
-    else if (strcmp(command, "sim stop") == 0)
-    {
-        PulseGenerator_Stop();
-        Debug_SendText("ok: sim stopped without end notification\r\n");
-        Debug_SendPulseGeneratorState();
-    }
-    else if (strcmp(command, "sim status") == 0)
-    {
-        Debug_SendPulseGeneratorState();
-        Debug_SendPulseInputState();
     }
     else if (sscanf(command, "vofa pos diag %ld", &target_position_count) == 1)
     {
@@ -2846,6 +2857,11 @@ void Debug_Loop(void)
         Debug_ProcessPendingText();
     }
 
+    if (s_debug.sim_stop_requested != 0U)
+    {
+        s_debug.sim_stop_requested = 0U;
+        PulseGenerator_Stop();
+    }
     /* 停止请求优先于普通命令和连续遥测，避免调试数据阻塞停机。 */
     if (s_debug.stop_requested != 0U)
     {
@@ -2953,7 +2969,8 @@ void Debug_CdcRxCallback(const uint8_t *data, uint32_t length)
             {
                 s_debug.rx_buffer[s_debug.rx_length] = '\0';
                 s_debug.rx_length = 0U;
-                if ((strcmp(s_debug.rx_buffer, "vofa stop") == 0) ||
+                if ((strcmp(s_debug.rx_buffer, "stop") == 0) ||
+                    (strcmp(s_debug.rx_buffer, "vofa stop") == 0) ||
                     (strcmp(s_debug.rx_buffer, "speed stop") == 0) ||
                     (strcmp(s_debug.rx_buffer, "pos stop") == 0))
                 {
@@ -2962,7 +2979,9 @@ void Debug_CdcRxCallback(const uint8_t *data, uint32_t length)
                 }
                 else
                 {
-                    s_debug.command_ready = 1U;
+                    if (strcmp(s_debug.rx_buffer, "sim stop") == 0)
+                        s_debug.sim_stop_requested = 1U;
+                    else s_debug.command_ready = 1U;
                 }
             }
         }

@@ -22,6 +22,7 @@ typedef struct
     /* 外部板 MC_refreshSpeed() 算出的 aimFreq，不是实际表内最高频率。 */
     uint32_t aim_frequency_hz;
     int8_t direction;
+    uint8_t constant_frequency; /* 1: constant Hz, no ramp */
 } PulseGenerator_Config_t;
 
 typedef struct
@@ -37,6 +38,7 @@ typedef struct
     /* 本轮调度诊断；间隔测量指软件实际注入STEP的时刻，不是计划CCR。 */
     uint32_t late_schedule_count;
     uint32_t maximum_injection_interval_us;
+    uint32_t maximum_irq_latency_ticks; /* 10.5 MHz; actual ISR time minus CCR3 */
 } PulseGenerator_State_t;
 
 /* 清零发生器状态并确保 TIM3_CH3 比较中断关闭。 */

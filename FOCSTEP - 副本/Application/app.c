@@ -14,8 +14,8 @@
 #include "motor_test.h"
 #include "power_monitor.h"
 #include "position_loop.h"
-#include "pulse_generator.h"
 #include "pulse_input.h"
+#include "pulse_generator.h"
 #include "rotor_alignment.h"
 #include "speed_loop.h"
 

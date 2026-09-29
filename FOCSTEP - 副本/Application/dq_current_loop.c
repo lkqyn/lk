@@ -8,6 +8,7 @@
 #include "encoder.h"
 #include "motor_pwm.h"
 #include "motor_parameters.h"
+#include "pulse_input.h"
 #include "stm32f4xx_hal.h"
 
 #define DQ_CURRENT_LOOP_MAX_ANGLE_ADVANCE_DELAY_US (100UL)
@@ -267,6 +268,7 @@ static void DqCurrentLoop_SampleCallback(void *context)
                                &measured_q_ma);
     loop->state.measured_d_ma = measured_d_ma;
     loop->state.measured_q_ma = measured_q_ma;
+    PulseInput_RecordCurrentSample(measured_q_ma);
     loop->state.measured_phase_a_ma = current->current_a_ma;
     loop->state.measured_phase_b_ma = current->current_b_ma;
 
@@ -509,6 +511,7 @@ uint8_t DqCurrentLoop_SetOperatingPoint(int32_t target_d_ma,
     s_dq_current_loop.state.target_q_ma = target_q_ma;
     s_dq_current_loop.state.feedforward_d_mv = feedforward_d_mv;
     s_dq_current_loop.state.feedforward_q_mv = feedforward_q_mv;
+    PulseInput_RecordCurrentTarget(target_q_ma);
     if (interrupt_mask == 0U)
     {
         __enable_irq();

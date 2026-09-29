@@ -12,22 +12,25 @@
 
 #include "pulse_input.h"
 #include "tim.h"
+#include "speed_loop.h"
+#include "position_loop.h"
 
 #define PULSE_GENERATOR_TIMER_HZ              (10500000UL)
 #define PULSE_GENERATOR_EXTERNAL_TIMER_HZ       (2000000UL)
 #define PULSE_GENERATOR_MINIMUM_FREQUENCY_HZ      (600UL)
-#define PULSE_GENERATOR_MAXIMUM_FREQUENCY_HZ    (50000UL)
+#define PULSE_GENERATOR_MAXIMUM_FREQUENCY_HZ    (40000UL)
 #define PULSE_GENERATOR_EXTERNAL_RAMP_PULSES      (200U)
 
 static volatile PulseGenerator_State_t s_pulse_generator;
 /* 启动时计算周期，中断内只查表，避免逐颗执行64位除法。 */
 static uint16_t s_interval_table[PULSE_GENERATOR_EXTERNAL_RAMP_PULSES];
+static uint8_t s_constant_frequency;
 static uint32_t s_last_injection_cpu_cycle;
 static uint32_t s_cpu_cycles_per_us;
 
 /*
  * 按外部板的 2 MHz 整数 ARR 计算周期，再换算为本机 TIM3 的 10.5 MHz
- * 比较间隔。这样保留外部板除法截断带来的实际边沿时间，而非只保留理想 Hz。
+ * 比较间隔。这样保留 ARR 截断和 ARR+1 计数周期；并非外部 PWM 更新相位的逐拍复刻。
  */
 static uint16_t PulseGenerator_ExternalRateToInterval(
     uint32_t frequency_x10000)
@@ -37,7 +40,8 @@ static uint16_t PulseGenerator_ExternalRateToInterval(
 
     external_arr = ((uint64_t)PULSE_GENERATOR_EXTERNAL_TIMER_HZ * 10000ULL) /
                    frequency_x10000;
-    interval = (external_arr * 21ULL + 2ULL) / 4ULL;
+    /* External code writes ARR directly: counter period is ARR + 1. */
+    interval = ((external_arr + 1ULL) * 21ULL + 2ULL) / 4ULL;
     if (interval == 0U)
     {
         interval = 1U;
@@ -109,6 +113,7 @@ static uint32_t PulseGenerator_GetInterval(
     uint16_t ramp = s_pulse_generator.ramp_pulse_count;
     uint32_t total = s_pulse_generator.requested_pulse_count;
 
+    if (s_constant_frequency != 0U) return s_interval_table[0];
     if ((ramp != 0U) && (emitted_pulse_count < ramp))
     {
         interval = PulseGenerator_GetRampInterval(
@@ -123,8 +128,8 @@ static uint32_t PulseGenerator_GetInterval(
     }
     else
     {
-        interval = s_interval_table[
-            PULSE_GENERATOR_EXTERNAL_RAMP_PULSES - 1U];
+        /* Short moves retain the peak reached by their truncated ramp. */
+        interval = s_interval_table[(ramp != 0U) ? ramp - 1U : 0U];
     }
     return interval;
 }
@@ -168,6 +173,7 @@ void PulseGenerator_Init(void)
     s_pulse_generator.fault = 0U;
     s_pulse_generator.late_schedule_count = 0U;
     s_pulse_generator.maximum_injection_interval_us = 0U;
+    s_pulse_generator.maximum_irq_latency_ticks = 0U;
 }
 
 /* 建立单板测试脉冲流；PulseInput 仍不知道总数和末脉冲位置。 */
@@ -181,7 +187,9 @@ uint8_t PulseGenerator_Start(const PulseGenerator_Config_t *config)
         (config->aim_frequency_hz < PULSE_GENERATOR_MINIMUM_FREQUENCY_HZ) ||
         (config->aim_frequency_hz > PULSE_GENERATOR_MAXIMUM_FREQUENCY_HZ) ||
         ((config->direction != 1) && (config->direction != -1)) ||
-        (PulseInput_GetState()->enabled == 0U))
+        (PulseInput_GetState()->enabled == 0U) ||
+        (SpeedLoop_GetState()->running == 0U) ||
+        (PositionLoop_GetState()->running == 0U))
     {
         return 0U;
     }
@@ -193,7 +201,9 @@ uint8_t PulseGenerator_Start(const PulseGenerator_Config_t *config)
         uint32_t rate = PULSE_GENERATOR_MINIMUM_FREQUENCY_HZ * 10000U +
             (config->aim_frequency_hz - PULSE_GENERATOR_MINIMUM_FREQUENCY_HZ) *
             s_external_bo_factor_x10000[index];
-        s_interval_table[index] = PulseGenerator_ExternalRateToInterval(rate);
+        s_interval_table[index] = (config->constant_frequency != 0U) ?
+            (uint16_t)((PULSE_GENERATOR_TIMER_HZ + config->aim_frequency_hz / 2U) /
+                       config->aim_frequency_hz) : PulseGenerator_ExternalRateToInterval(rate);
     }
     /* DWT只用于观测注入间隔，不清零，避免干扰其他性能测量。 */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -207,6 +217,8 @@ uint8_t PulseGenerator_Start(const PulseGenerator_Config_t *config)
         return 0U;
     }
 
+    PulseInput_SelectSimulatedSource(1U);
+    s_constant_frequency = config->constant_frequency;
     s_pulse_generator.requested_pulse_count = config->total_pulse_count;
     s_pulse_generator.emitted_pulse_count = 0U;
     s_pulse_generator.aim_frequency_hz = config->aim_frequency_hz;
@@ -215,6 +227,7 @@ uint8_t PulseGenerator_Start(const PulseGenerator_Config_t *config)
     s_pulse_generator.fault = 0U;
     s_pulse_generator.late_schedule_count = 0U;
     s_pulse_generator.maximum_injection_interval_us = 0U;
+    s_pulse_generator.maximum_irq_latency_ticks = 0U;
     s_last_injection_cpu_cycle = 0U;
     s_pulse_generator.ramp_pulse_count =
         (config->total_pulse_count > (PULSE_GENERATOR_EXTERNAL_RAMP_PULSES * 2U)) ?
@@ -255,11 +268,25 @@ void PulseGenerator_OnTim3CompareInterrupt(void)
         return;
     }
 
+    if ((PulseInput_GetState()->enabled == 0U) ||
+        (SpeedLoop_GetState()->running == 0U) ||
+        (PositionLoop_GetState()->running == 0U))
+    {
+        PulseGenerator_Stop();
+        s_pulse_generator.fault = 1U;
+        return;
+    }
     capture_count = (uint16_t)TIM3->CCR3;
     actual_count = (uint16_t)TIM3->CNT;
     cpu_cycle = DWT->CYCCNT;
-    /* 软件模拟没有物理捕获边沿，以实际注入时刻作为接收端时间戳。 */
-    PulseInput_OnSimulatedStepCaptured(actual_count,
+    /* CCR3 represents the hardware compare event, like CCR2 captures a real STEP.
+     * Keep ISR latency observable, but do not add it to the received edge period.
+     * If scheduling is late, ScheduleNext moves CCR3 and records that real gap. */
+    if ((uint16_t)(actual_count - capture_count) >
+        s_pulse_generator.maximum_irq_latency_ticks)
+        s_pulse_generator.maximum_irq_latency_ticks =
+            (uint16_t)(actual_count - capture_count);
+    PulseInput_OnSimulatedStepCaptured(capture_count,
                                        s_pulse_generator.direction);
     if (s_pulse_generator.emitted_pulse_count != 0U)
     {

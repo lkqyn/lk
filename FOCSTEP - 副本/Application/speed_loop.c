@@ -53,6 +53,8 @@
 #define SPEED_LOOP_FW_VOLTAGE_FILTER_DIVISOR      (50L)
 #define SPEED_LOOP_FW_VOLTAGE_INCREASE_DIVISOR    (50L)
 #define SPEED_LOOP_FW_VOLTAGE_RELEASE_DIVISOR     (200L)
+#define SPEED_LOOP_FW_DECEL_RELEASE_DIVISOR        (20L)
+#define SPEED_LOOP_FW_DECEL_RELEASE_MAX_MV         (100L)
 #define SPEED_LOOP_FW_VOLTAGE_DEADBAND_MV          (100L)
 #define SPEED_LOOP_PERMILLE_SCALE                  (1000LL)
 #define SPEED_LOOP_FIXED_ID_MINIMUM_MA             (-2500L)
@@ -77,6 +79,8 @@ typedef struct
     int32_t filtered_weakening_speed_mrpm;
     int32_t filtered_voltage_magnitude_mv;
     int32_t field_weakening_voltage_correction_mv;
+    uint32_t fw_previous_saturated_sample_count;
+    uint8_t fw_saturation_baseline_valid;
     uint32_t field_weakening_voltage_ratio_permille;
     int32_t fixed_weakening_id_ma;
     uint8_t fixed_weakening_enabled;
@@ -87,6 +91,9 @@ typedef struct
     volatile int32_t external_torque_override_ma;
     volatile uint8_t external_torque_override_active;
     volatile int32_t external_braking_current_limit_ma;
+    volatile uint8_t external_braking_integral_reset_enabled;
+    volatile uint8_t control_update_busy;
+    volatile uint8_t hold_refresh_pending;
     volatile uint16_t trace_write_index;
     volatile uint16_t trace_read_index;
     volatile uint32_t trace_dropped_count;
@@ -361,12 +368,34 @@ static int32_t SpeedLoop_FilterBusVoltageMv(uint32_t measured_voltage_mv)
     return s_speed_loop.filtered_bus_voltage_mv;
 }
 
-/* 对弱磁规划使用的转速作滤波，降低高速换向时的指令突变。 */
+/* 加速/换向保留滤波；同向减速时消除额外滤波的高转速残留。 */
 static int32_t SpeedLoop_FilterWeakeningSpeedMrpm(
-    int32_t measured_speed_mrpm)
+    int32_t measured_speed_mrpm,
+    int32_t target_speed_mrpm)
 {
     int32_t filter_error_mrpm = measured_speed_mrpm -
         s_speed_loop.filtered_weakening_speed_mrpm;
+
+    /*
+     * 仅当目标、反馈及滤波状态同向（目标允许为0），且目标幅值不高于
+     * 反馈时，才将滞后的滤波状态降到反馈值。反馈本身已有测速处理。
+     * 反馈为0或正在换向时仍走原滤波，避免一次零速/反向采样突撤弱磁。
+     * 此处不直接修改Id/Iq；后续工作点计算和电压、电流保护仍然生效。
+     */
+    if ((((measured_speed_mrpm > 0L) &&
+          (s_speed_loop.filtered_weakening_speed_mrpm > 0L) &&
+          (target_speed_mrpm >= 0L)) ||
+         ((measured_speed_mrpm < 0L) &&
+          (s_speed_loop.filtered_weakening_speed_mrpm < 0L) &&
+          (target_speed_mrpm <= 0L))) &&
+        (SpeedLoop_Absolute(target_speed_mrpm) <=
+         SpeedLoop_Absolute(measured_speed_mrpm)) &&
+        (SpeedLoop_Absolute(s_speed_loop.filtered_weakening_speed_mrpm) >
+         SpeedLoop_Absolute(measured_speed_mrpm)))
+    {
+        s_speed_loop.filtered_weakening_speed_mrpm = measured_speed_mrpm;
+        return measured_speed_mrpm;
+    }
 
     /* 对正负转速采用对称舍入，避免整数除法产生方向相关偏差。 */
     if (filter_error_mrpm >= 0L)
@@ -416,6 +445,15 @@ static void SpeedLoop_UpdateFieldWeakeningVoltageCorrection(
     int32_t control_error_mv;
     int32_t maximum_correction_mv;
     int32_t adjustment_mv;
+    uint32_t saturated_sample_count = current_loop->saturated_sample_count;
+    uint8_t unsaturated_interval =
+        ((s_speed_loop.fw_saturation_baseline_valid != 0U) &&
+         (saturated_sample_count ==
+          s_speed_loop.fw_previous_saturated_sample_count)) ? 1U : 0U;
+
+    /* 比较整段电流环累计值，不以单个1ms采样点代替20kHz饱和记录。 */
+    s_speed_loop.fw_previous_saturated_sample_count = saturated_sample_count;
+    s_speed_loop.fw_saturation_baseline_valid = 1U;
 
     voltage_magnitude_mv_float = sqrtf(
         ((float)current_loop->output_d_mv *
@@ -453,7 +491,31 @@ static void SpeedLoop_UpdateFieldWeakeningVoltageCorrection(
     {
         control_error_mv = s_speed_loop.filtered_voltage_magnitude_mv -
                            target_voltage_mv;
-        if (control_error_mv > SPEED_LOOP_FW_VOLTAGE_DEADBAND_MV)
+        /*
+         * 仅连续脉冲减速阶段、有电压余量且上一采样区间无饱和时，
+         * 按当前输出加快释放历史修正；每毫秒最多释放100mV。
+         * 不改规划比例/电压上限；HOLD、匀速及有饱和时走原逻辑。
+         */
+        if ((s_speed_loop.external_braking_integral_reset_enabled != 0U) &&
+            (s_speed_loop.external_torque_override_active == 0U) &&
+            (s_speed_loop.field_weakening_voltage_correction_mv > 0L) &&
+            (unsaturated_interval != 0U) &&
+            (current_loop->voltage_saturated == 0U) &&
+            (voltage_magnitude_mv <
+             (target_voltage_mv - SPEED_LOOP_FW_VOLTAGE_DEADBAND_MV)))
+        {
+            adjustment_mv =
+                (target_voltage_mv - voltage_magnitude_mv -
+                 SPEED_LOOP_FW_VOLTAGE_DEADBAND_MV +
+                 SPEED_LOOP_FW_DECEL_RELEASE_DIVISOR - 1L) /
+                SPEED_LOOP_FW_DECEL_RELEASE_DIVISOR;
+            if (adjustment_mv > SPEED_LOOP_FW_DECEL_RELEASE_MAX_MV)
+            {
+                adjustment_mv = SPEED_LOOP_FW_DECEL_RELEASE_MAX_MV;
+            }
+            s_speed_loop.field_weakening_voltage_correction_mv -= adjustment_mv;
+        }
+        else if (control_error_mv > SPEED_LOOP_FW_VOLTAGE_DEADBAND_MV)
         {
             adjustment_mv =
                 (control_error_mv - SPEED_LOOP_FW_VOLTAGE_DEADBAND_MV +
@@ -572,14 +634,15 @@ static float SpeedLoop_CalculateVoltageIqCapacitySquared(
 /* 依据电机模型、电压约束及弱磁策略求实际 d/q 运行点。 */
 static void SpeedLoop_CalculatePhysicalOperatingPoint(
     int32_t requested_physical_iq_ma,
-    int32_t measured_speed_mrpm,
+    int32_t planning_speed_mrpm,
+    int32_t feedback_speed_mrpm,
     int32_t target_speed_mrpm,
     int8_t torque_direction_sign,
     SpeedLoop_OperatingPoint_t *operating_point)
 {
     float electrical_speed_rad_s =
         SpeedLoop_CalculateElectricalAngularSpeedRadS(
-            measured_speed_mrpm);
+            planning_speed_mrpm);
     float abs_electrical_speed_rad_s = fabsf(electrical_speed_rad_s);
     float current_limit_a =
         (float)s_speed_loop.config.current_vector_limit_ma /
@@ -818,6 +881,8 @@ static void SpeedLoop_CalculatePhysicalOperatingPoint(
         }
     }
     /*
+     * 工作点容量使用规划速度；电压前馈只使用带方向的反馈速度。
+     * 目标反转不代表转子已经反转，不能把预弱磁速度用于反电动势。
      * 完整dq稳态电压前馈：电阻压降、交叉耦合和反电动势统一补偿。
      * 电流PI仅负责参数误差、采样纹波与动态误差，避免深弱磁时
      * Rs*I稳态压降持续占用PI调节余量。
@@ -825,7 +890,7 @@ static void SpeedLoop_CalculatePhysicalOperatingPoint(
     SpeedLoop_CalculateVoltageFeedforward(
         id_target_a,
         iq_target_a,
-        electrical_speed_rad_s,
+        SpeedLoop_CalculateElectricalAngularSpeedRadS(feedback_speed_mrpm),
         operating_point);
     operating_point->field_weakening_active =
         (uint8_t)((operating_point->id_target_ma < 0L) ? 1U : 0U);
@@ -835,7 +900,8 @@ static void SpeedLoop_CalculatePhysicalOperatingPoint(
 /* 统一选择固定/物理模型工作点，输出本拍 d/q 命令和诊断量。 */
 static void SpeedLoop_CalculateOperatingPoint(
     int32_t requested_torque_equivalent_iq_ma,
-    int32_t measured_speed_mrpm,
+    int32_t planning_speed_mrpm,
+    int32_t feedback_speed_mrpm,
     int32_t target_speed_mrpm,
     int8_t torque_direction_sign,
     SpeedLoop_OperatingPoint_t *operating_point)
@@ -861,7 +927,7 @@ static void SpeedLoop_CalculateOperatingPoint(
         float iq_target_a;
         float electrical_speed_rad_s =
             SpeedLoop_CalculateElectricalAngularSpeedRadS(
-                measured_speed_mrpm);
+                feedback_speed_mrpm);
 
         if (iq_capacity_squared <= 0LL)
         {
@@ -918,7 +984,8 @@ static void SpeedLoop_CalculateOperatingPoint(
     {
         SpeedLoop_CalculatePhysicalOperatingPoint(
             requested_physical_iq_ma,
-            measured_speed_mrpm,
+            planning_speed_mrpm,
+            feedback_speed_mrpm,
             target_speed_mrpm,
             torque_direction_sign,
             operating_point);
@@ -958,6 +1025,8 @@ static void SpeedLoop_EnterFault(SpeedLoop_Fault_t fault)
 /* 清零速度 PI、弱磁、保护和诊断队列状态。 */
 void SpeedLoop_Init(void)
 {
+    s_speed_loop.control_update_busy = 0U;
+    s_speed_loop.hold_refresh_pending = 0U;
     SpeedLoop_ResetTrace();
     s_speed_loop.integral_ua = 0LL;
     s_speed_loop.maximum_voltage_mv = 0L;
@@ -965,6 +1034,8 @@ void SpeedLoop_Init(void)
     s_speed_loop.filtered_weakening_speed_mrpm = 0L;
     s_speed_loop.filtered_voltage_magnitude_mv = 0L;
     s_speed_loop.field_weakening_voltage_correction_mv = 0L;
+    s_speed_loop.fw_previous_saturated_sample_count = 0U;
+    s_speed_loop.fw_saturation_baseline_valid = 0U;
     s_speed_loop.field_weakening_voltage_ratio_permille =
         SPEED_LOOP_FIELD_WEAKENING_DEFAULT_RATIO_PERMILLE;
     s_speed_loop.fixed_weakening_id_ma = 0L;
@@ -976,6 +1047,13 @@ void SpeedLoop_Init(void)
     s_speed_loop.external_torque_override_ma = 0L;
     s_speed_loop.external_torque_override_active = 0U;
     s_speed_loop.external_braking_current_limit_ma = 0L;
+    s_speed_loop.external_braking_integral_reset_enabled = 0U;
+    s_speed_loop.state.brake_requested_iq_ma = 0L;
+    s_speed_loop.state.brake_requested_limit_ma = 0L;
+    s_speed_loop.state.brake_effective_limit_ma = 0L;
+    s_speed_loop.state.brake_diagnostic_flags = 0U;
+    s_speed_loop.state.weakening_planning_speed_mrpm = 0L;
+    s_speed_loop.state.diagnostic_current_vector_limit_ma = 0L;
     s_speed_loop.state.target_speed_mrpm = 0L;
     s_speed_loop.state.measured_speed_mrpm = 0L;
     s_speed_loop.state.speed_error_mrpm = 0L;
@@ -1071,10 +1149,19 @@ uint8_t SpeedLoop_Start(const SpeedLoop_Config_t *config,
     s_speed_loop.external_torque_override_ma = 0L;
     s_speed_loop.external_torque_override_active = 0U;
     s_speed_loop.external_braking_current_limit_ma = 0L;
+    s_speed_loop.external_braking_integral_reset_enabled = 0U;
+    s_speed_loop.state.brake_requested_iq_ma = 0L;
+    s_speed_loop.state.brake_requested_limit_ma = 0L;
+    s_speed_loop.state.brake_effective_limit_ma = 0L;
+    s_speed_loop.state.brake_diagnostic_flags = 0U;
+    s_speed_loop.state.weakening_planning_speed_mrpm = 0L;
+    s_speed_loop.state.diagnostic_current_vector_limit_ma = 0L;
     s_speed_loop.maximum_voltage_mv = (int32_t)pwm_voltage_limit_mv;
     s_speed_loop.filtered_bus_voltage_mv = (int32_t)power->bus_voltage_mv;
     s_speed_loop.filtered_voltage_magnitude_mv = 0L;
     s_speed_loop.field_weakening_voltage_correction_mv = 0L;
+    s_speed_loop.fw_previous_saturated_sample_count = 0U;
+    s_speed_loop.fw_saturation_baseline_valid = 0U;
     s_speed_loop.held_logical_iq_ma = 0L;
     s_speed_loop.held_id_target_ma = 0L;
     s_speed_loop.held_iq_target_ma = 0L;
@@ -1185,7 +1272,8 @@ uint8_t SpeedLoop_ResetIntegrator(void)
 }
 
 /* 设置外部位置模式在再生制动方向允许的最大 Iq。 */
-uint8_t SpeedLoop_SetExternalBrakingCurrentLimitMa(int32_t limit_ma)
+uint8_t SpeedLoop_SetExternalBrakingCurrentLimitMa(int32_t limit_ma,
+                                                uint8_t reset_opposing_integral)
 {
     uint32_t interrupt_mask;
 
@@ -1197,6 +1285,9 @@ uint8_t SpeedLoop_SetExternalBrakingCurrentLimitMa(int32_t limit_ma)
     interrupt_mask = __get_PRIMASK();
     __disable_irq();
     s_speed_loop.external_braking_current_limit_ma = limit_ma;
+    /* 限流与清积分权限分开：HOLD仍限流，但允许正常积分消除静差。 */
+    s_speed_loop.external_braking_integral_reset_enabled =
+        ((limit_ma > 0L) && (reset_opposing_integral != 0U)) ? 1U : 0U;
     if (interrupt_mask == 0U)
     {
         __enable_irq();
@@ -1259,6 +1350,7 @@ uint8_t SpeedLoop_ApplyExternalTorqueOverrideFast(void)
     logical_iq_ma = s_speed_loop.external_torque_override_ma;
     SpeedLoop_CalculateOperatingPoint(
         logical_iq_ma,
+        s_speed_loop.state.measured_speed_mrpm,
         s_speed_loop.state.measured_speed_mrpm,
         s_speed_loop.state.target_speed_mrpm,
         s_speed_loop.config.torque_direction_sign,
@@ -1369,11 +1461,18 @@ void SpeedLoop_Stop(void)
     s_speed_loop.external_torque_override_ma = 0L;
     s_speed_loop.external_torque_override_active = 0U;
     s_speed_loop.external_braking_current_limit_ma = 0L;
+    s_speed_loop.external_braking_integral_reset_enabled = 0U;
+    s_speed_loop.state.brake_requested_iq_ma = 0L;
+    s_speed_loop.state.brake_requested_limit_ma = 0L;
+    s_speed_loop.state.brake_effective_limit_ma = 0L;
+    s_speed_loop.state.brake_diagnostic_flags = 0U;
+    s_speed_loop.state.weakening_planning_speed_mrpm = 0L;
+    s_speed_loop.state.diagnostic_current_vector_limit_ma = 0L;
     s_speed_loop.state.running = 0U;
 }
 
-/* 1 kHz 采样速度、执行 PI/保护/弱磁并向 20 kHz 电流环更新工作点。 */
-void SpeedLoop_Tick1ms(void)
+/* 共用受保护工作点计算；事件刷新不推进积分、滤波或毫秒计时。 */
+static void SpeedLoop_UpdateControl(uint8_t periodic_tick)
 {
     const PowerMonitor_State_t *power;
     const volatile DqCurrentLoop_State_t *current_loop;
@@ -1389,6 +1488,18 @@ void SpeedLoop_Tick1ms(void)
     int32_t weakening_planning_speed_mrpm;
     int32_t voltage_limit_mv;
     int32_t external_braking_current_limit_ma;
+    uint32_t interrupt_mask;
+
+    /* HOLD入口清积分只在本执行者内处理，避免高优先级外环打断PI更新。 */
+    interrupt_mask = __get_PRIMASK();
+    __disable_irq();
+    if (s_speed_loop.hold_refresh_pending != 0U)
+    {
+        s_speed_loop.hold_refresh_pending = 0U;
+        s_speed_loop.integral_ua = 0LL;
+        s_speed_loop.state.integral_output_ma = 0L;
+    }
+    if (interrupt_mask == 0U) __enable_irq();
 
     if (s_speed_loop.state.running == 0U)
     {
@@ -1409,8 +1520,9 @@ void SpeedLoop_Tick1ms(void)
         SpeedLoop_EnterFault(SPEED_LOOP_FAULT_BUS_VOLTAGE);
         return;
     }
-    filtered_bus_voltage_mv = SpeedLoop_FilterBusVoltageMv(
-        power->bus_voltage_mv);
+    filtered_bus_voltage_mv = (periodic_tick != 0U) ?
+        SpeedLoop_FilterBusVoltageMv(power->bus_voltage_mv) :
+        s_speed_loop.filtered_bus_voltage_mv;
     voltage_limit_mv = SpeedLoop_CalculateVoltageLimitMv(
         (uint32_t)filtered_bus_voltage_mv);
     if (DqCurrentLoop_UpdateVoltageBudget(
@@ -1424,30 +1536,39 @@ void SpeedLoop_Tick1ms(void)
     s_speed_loop.state.filtered_bus_voltage_mv =
         (uint32_t)filtered_bus_voltage_mv;
     s_speed_loop.state.current_voltage_limit_mv = voltage_limit_mv;
-    if ((s_speed_loop.fixed_weakening_enabled == 0U) &&
-        (s_speed_loop.state.current_hold_active == 0U))
+    if (periodic_tick != 0U)
     {
-        SpeedLoop_UpdateFieldWeakeningVoltageCorrection(
-            current_loop,
-            voltage_limit_mv);
-    }
-    else
-    {
-        /* 固定Id诊断必须隔离电压余量闭环，避免隐藏的调度状态参与。 */
-        s_speed_loop.field_weakening_voltage_correction_mv = 0L;
-        s_speed_loop.state.field_weakening_voltage_correction_mv = 0L;
+        if ((s_speed_loop.fixed_weakening_enabled == 0U) &&
+            (s_speed_loop.state.current_hold_active == 0U))
+        {
+            SpeedLoop_UpdateFieldWeakeningVoltageCorrection(
+                current_loop,
+                voltage_limit_mv);
+        }
+        else
+        {
+            /* 固定Id诊断必须隔离电压余量闭环，避免隐藏的调度状态参与。 */
+            s_speed_loop.fw_saturation_baseline_valid = 0U;
+            s_speed_loop.field_weakening_voltage_correction_mv = 0L;
+            s_speed_loop.state.field_weakening_voltage_correction_mv = 0L;
+        }
     }
 
-    s_speed_loop.state.elapsed_ms++;
+    if (periodic_tick != 0U) s_speed_loop.state.elapsed_ms++;
     s_speed_loop.state.measured_speed_mrpm =
         Encoder_GetControlSpeedMrpmFast();
-    filtered_weakening_speed_mrpm =
+    filtered_weakening_speed_mrpm = (periodic_tick != 0U) ?
         SpeedLoop_FilterWeakeningSpeedMrpm(
-            s_speed_loop.state.measured_speed_mrpm);
+            s_speed_loop.state.measured_speed_mrpm,
+            s_speed_loop.state.target_speed_mrpm) :
+        s_speed_loop.filtered_weakening_speed_mrpm;
     weakening_planning_speed_mrpm =
         SpeedLoop_SelectWeakeningPlanningSpeedMrpm(
             filtered_weakening_speed_mrpm,
             s_speed_loop.state.target_speed_mrpm);
+    s_speed_loop.state.weakening_planning_speed_mrpm = weakening_planning_speed_mrpm;
+    s_speed_loop.state.diagnostic_current_vector_limit_ma =
+        s_speed_loop.config.current_vector_limit_ma;
     s_speed_loop.state.speed_error_mrpm =
         s_speed_loop.state.target_speed_mrpm -
         s_speed_loop.state.measured_speed_mrpm;
@@ -1455,6 +1576,15 @@ void SpeedLoop_Tick1ms(void)
         SpeedLoop_LimitRegenerativeBrakeCurrentMa(
             s_speed_loop.external_braking_current_limit_ma,
             filtered_bus_voltage_mv);
+    /* 只镜像本周期制动决策，不参与原有控制运算。 */
+    s_speed_loop.state.brake_requested_iq_ma = 0L;
+    s_speed_loop.state.brake_requested_limit_ma =
+        s_speed_loop.external_braking_current_limit_ma;
+    s_speed_loop.state.brake_effective_limit_ma = external_braking_current_limit_ma;
+    s_speed_loop.state.brake_diagnostic_flags =
+        ((s_speed_loop.state.brake_requested_limit_ma > 0L) &&
+         (external_braking_current_limit_ma <
+          s_speed_loop.state.brake_requested_limit_ma)) ? 1U : 0U;
 
     if ((s_speed_loop.state.current_hold_enabled != 0U) &&
         (s_speed_loop.state.current_hold_active == 0U) &&
@@ -1502,7 +1632,7 @@ void SpeedLoop_Tick1ms(void)
         SpeedLoop_CalculateFixedCurrentOperatingPoint(
             s_speed_loop.held_id_target_ma,
             s_speed_loop.held_iq_target_ma,
-            filtered_weakening_speed_mrpm,
+            s_speed_loop.state.measured_speed_mrpm,
             &operating_point);
         logical_iq_ma = s_speed_loop.held_logical_iq_ma;
         applied_torque_equivalent_iq_ma =
@@ -1525,6 +1655,7 @@ void SpeedLoop_Tick1ms(void)
         SpeedLoop_CalculateOperatingPoint(
             logical_iq_ma,
             weakening_planning_speed_mrpm,
+            s_speed_loop.state.measured_speed_mrpm,
             0L,
             s_speed_loop.config.torque_direction_sign,
             &operating_point);
@@ -1542,9 +1673,9 @@ void SpeedLoop_Tick1ms(void)
     s_speed_loop.state.effective_kp_ua_per_rpm =
         s_speed_loop.config.kp_ua_per_rpm;
     /* 1ms离散积分：mrpm转rpm和ms转s后的综合分母为1e6。 */
-    integral_increment_ua =
+    integral_increment_ua = (periodic_tick != 0U) ?
         ((int64_t)s_speed_loop.config.ki_ua_per_rpm_s *
-         s_speed_loop.state.speed_error_mrpm) / 1000000LL;
+         s_speed_loop.state.speed_error_mrpm) / 1000000LL : 0LL;
 
     limit_ua = (int64_t)s_speed_loop.config.current_vector_limit_ma *
                SPEED_LOOP_UA_PER_MA;
@@ -1572,21 +1703,25 @@ void SpeedLoop_Tick1ms(void)
 
     logical_iq_ma = SpeedLoop_UaToMa(output_ua);
     /*
-     * 外部STEP已经连续减速且实际转速仍高于速度目标时，旧积分绝不能
-     * 继续输出同向驱动转矩。否则P项虽然已请求制动，积分仍会把它抵消，
-     * 直到位置误差很大才突然反向。这里按实际速度与速度误差判定，
-     * 不依赖外部板的脉冲数、行程或加减速时间。
+     * 仅在运动减速阶段清除抵消P制动项的反向积分，正确制动方向的
+     * 积分必须保留。HOLD关闭此策略，避免量化速度变号反复清积分，
+     * 导致最终定位无法积累纠偏转矩；后续限流和抗饱和仍正常执行。
      */
     if ((external_braking_current_limit_ma > 0L) &&
+        (s_speed_loop.external_braking_integral_reset_enabled != 0U) &&
         (((int64_t)s_speed_loop.state.speed_error_mrpm *
-          s_speed_loop.state.measured_speed_mrpm) < 0LL))
+          s_speed_loop.state.measured_speed_mrpm) < 0LL) &&
+        (((proportional_ua < 0LL) && (s_speed_loop.integral_ua > 0LL)) ||
+         ((proportional_ua > 0LL) && (s_speed_loop.integral_ua < 0LL))))
     {
         /* 清零积分后立刻保留P制动项，不能再用积分抵消它。 */
+        s_speed_loop.state.brake_diagnostic_flags |= 4U;
         s_speed_loop.integral_ua = 0LL;
         output_ua = proportional_ua;
         logical_iq_ma = SpeedLoop_UaToMa(output_ua);
         s_speed_loop.state.output_saturated = 1U;
     }
+    s_speed_loop.state.brake_requested_iq_ma = logical_iq_ma;
     if ((external_braking_current_limit_ma > 0L) &&
         (((int64_t)logical_iq_ma *
           s_speed_loop.state.measured_speed_mrpm) < 0LL) &&
@@ -1596,6 +1731,7 @@ void SpeedLoop_Tick1ms(void)
         logical_iq_ma = (logical_iq_ma > 0L) ?
             external_braking_current_limit_ma :
             -external_braking_current_limit_ma;
+        s_speed_loop.state.brake_diagnostic_flags |= 2U;
         output_ua = (int64_t)logical_iq_ma * SPEED_LOOP_UA_PER_MA;
         s_speed_loop.integral_ua = output_ua - proportional_ua;
         s_speed_loop.state.output_saturated = 1U;
@@ -1603,6 +1739,7 @@ void SpeedLoop_Tick1ms(void)
     SpeedLoop_CalculateOperatingPoint(
         logical_iq_ma,
         weakening_planning_speed_mrpm,
+        s_speed_loop.state.measured_speed_mrpm,
         s_speed_loop.state.target_speed_mrpm,
         s_speed_loop.config.torque_direction_sign,
         &operating_point);
@@ -1645,7 +1782,7 @@ apply_operating_point:
     s_speed_loop.state.field_weakening_active =
         operating_point.field_weakening_active;
 
-    SpeedLoop_PushTraceSample(current_loop);
+    if (periodic_tick != 0U) SpeedLoop_PushTraceSample(current_loop);
 
     /*
      * 方向保护比较速度指令与实际转向，不能使用瞬时Iq方向。
@@ -1690,6 +1827,58 @@ apply_operating_point:
     {
         SpeedLoop_EnterFault(SPEED_LOOP_FAULT_TARGET_UPDATE);
     }
+}
+
+/* 序列化1kHz和HOLD事件；临界区只保护调度标志，不包围模型计算。 */
+static void SpeedLoop_RunControl(uint8_t periodic_tick)
+{
+    uint32_t mask = __get_PRIMASK();
+    uint8_t refresh;
+    __disable_irq();
+    if (s_speed_loop.control_update_busy != 0U)
+    {
+        if (mask == 0U) __enable_irq();
+        return;
+    }
+    s_speed_loop.control_update_busy = 1U;
+    if (mask == 0U) __enable_irq();
+
+    SpeedLoop_UpdateControl(periodic_tick);
+    mask = __get_PRIMASK();
+    __disable_irq();
+    refresh = s_speed_loop.hold_refresh_pending;
+    if (refresh == 0U) s_speed_loop.control_update_busy = 0U;
+    if (mask == 0U) __enable_irq();
+    if (refresh != 0U)
+    {
+        /* 若TIM5在常规计算中请求停车，常规计算退出后立即补算，不重入。 */
+        SpeedLoop_UpdateControl(0U);
+        mask = __get_PRIMASK();
+        __disable_irq();
+        s_speed_loop.control_update_busy = 0U;
+        if (mask == 0U) __enable_irq();
+    }
+}
+
+void SpeedLoop_Tick1ms(void)
+{
+    SpeedLoop_RunControl(1U);
+}
+
+void SpeedLoop_RequestHoldRefresh(void)
+{
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    if ((s_speed_loop.state.running == 0U) ||
+        (s_speed_loop.state.current_hold_enabled != 0U) ||
+        (s_speed_loop.external_torque_override_active != 0U))
+    {
+        if (mask == 0U) __enable_irq();
+        return;
+    }
+    s_speed_loop.hold_refresh_pending = 1U;
+    if (mask == 0U) __enable_irq();
+    SpeedLoop_RunControl(0U);
 }
 
 /* 返回速度环和弱磁/故障状态快照。 */

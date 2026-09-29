@@ -88,6 +88,15 @@ typedef struct
     int32_t effective_kp_ua_per_rpm;
     /* 速度PI输出的Id=0等效转矩电流，单位mA。 */
     int32_t logical_iq_target_ma;
+    /* 仅诊断：制动限幅前等效Iq、请求/降额后限值，单位mA。 */
+    int32_t brake_requested_iq_ma;
+    int32_t brake_requested_limit_ma;
+    int32_t brake_effective_limit_ma;
+    /* bit0=母线降额，bit1=制动Iq被截限，bit2=制动条件清积分；可组合。 */
+    uint8_t brake_diagnostic_flags;
+    /* 仅诊断：本拍弱磁规划实际采用的转速及配置电流圆，不参与反馈。 */
+    int32_t weakening_planning_speed_mrpm;
+    int32_t diagnostic_current_vector_limit_ma;
     int32_t current_loop_id_target_ma;
     int32_t current_loop_iq_target_ma;
     /* 按磁阻转矩折算到Id=0工况的等效Iq，单位mA。 */
@@ -165,7 +174,9 @@ uint8_t SpeedLoop_SetTargetSpeedMrpm(int32_t target_speed_mrpm);
 uint8_t SpeedLoop_ResetIntegrator(void);
 
 /* 仅限制“转矩方向与当前转速相反”的回馈制动电流；0表示关闭限制。 */
-uint8_t SpeedLoop_SetExternalBrakingCurrentLimitMa(int32_t limit_ma);
+/* reset_opposing_integral仅运动减速时置1；HOLD置0但保留制动限流。 */
+uint8_t SpeedLoop_SetExternalBrakingCurrentLimitMa(int32_t limit_ma,
+                                                uint8_t reset_opposing_integral);
 
 /*
  * 外部位置伺服的转矩通道：直接指定等效Iq，旁路速度PI，
@@ -210,6 +221,8 @@ uint8_t SpeedLoop_DisableFixedWeakening(void);
 void SpeedLoop_Stop(void);
 /* 1 kHz 速度 PI、弱磁、母线保护和工作点更新。 */
 void SpeedLoop_Tick1ms(void);
+/* HOLD入口请求一次无时间积分的工作点刷新；若速度环正在执行则延后串行处理。 */
+void SpeedLoop_RequestHoldRefresh(void);
 /* 获取速度环的只读状态快照。 */
 const volatile SpeedLoop_State_t *SpeedLoop_GetState(void);
 

@@ -11,11 +11,12 @@
  * - 20 kHz：d/q FOC 电流环跟踪速度 PI 输出的电流命令。
  */
 #include "pulse_input.h"
+#include "pulse_generator.h"
 
 #include "encoder.h"
+#include "dq_current_loop.h"
 #include "main.h"
 #include "position_loop.h"
-#include "pulse_generator.h"
 #include "speed_loop.h"
 #include "tim.h"
 
@@ -104,9 +105,11 @@ typedef struct
     int8_t last_observed_raw_direction;
     uint8_t deceleration_confirmation_count;
     uint32_t last_edge_stable_start_cycle_count;
+    uint8_t stop_braking_samples;
 } PulseInput_Context_t;
 
 static PulseInput_Context_t s_pulse_input;
+static volatile uint8_t s_simulated_source;
 
 static int32_t PulseInput_ClampInt64ToInt32(int64_t value)
 {
@@ -154,6 +157,7 @@ static int32_t PulseInput_CommandPositionQ16ToCount(int64_t position_q16)
 
 static uint8_t PulseInput_IsExternalEnableActive(void)
 {
+    if (s_simulated_source != 0U) return 1U;
     return (HAL_GPIO_ReadPin(PUL_EN_GPIO_Port, PUL_EN_Pin) ==
             PULSE_INPUT_ENABLE_ACTIVE_LEVEL) ? 1U : 0U;
 }
@@ -176,14 +180,139 @@ static uint32_t PulseInput_GetCapturedTimestamp(uint16_t capture_count)
 
 static uint32_t PulseInput_GetTimerTimestamp(void)
 {
-    uint32_t overflow_count = s_pulse_input.capture_timer_overflow_count;
-    uint32_t counter = __HAL_TIM_GET_COUNTER(&htim3);
+    uint32_t interrupt_mask = __get_PRIMASK();
+    uint32_t overflow_count;
+    uint32_t counter;
+    uint32_t update_pending;
+    uint32_t timestamp;
 
-    if (((TIM3->SR & TIM_SR_UIF) != 0U) && (counter < 0x8000U))
+    /* 软件高位与CNT必须一致；允许在外层短临界区内嵌套调用。 */
+    __disable_irq();
+    overflow_count = s_pulse_input.capture_timer_overflow_count;
+    update_pending = TIM3->SR & TIM_SR_UIF;
+    counter = __HAL_TIM_GET_COUNTER(&htim3);
+    if ((update_pending == 0U) && ((TIM3->SR & TIM_SR_UIF) != 0U))
     {
-        overflow_count++;
+        /* 读取期间硬件刚回绕：重新取回绕后的CNT，不清任何中断标志。 */
+        counter = __HAL_TIM_GET_COUNTER(&htim3);
+        update_pending = TIM_SR_UIF;
     }
-    return (overflow_count << 16) | counter;
+    if (update_pending != 0U) overflow_count++;
+    timestamp = (overflow_count << 16) | counter;
+    if (interrupt_mask == 0U) __enable_irq();
+    return timestamp;
+}
+
+/* 不参与控制：仅在非零速度清零时记录，避免静止时反复覆盖现场。 */
+static void PulseInput_RecordReset(volatile PulseInput_ResetDiagnostic_t *diagnostic,
+                                  uint32_t interval_ticks,
+                                  uint32_t elapsed_ticks)
+{
+    if (s_pulse_input.command_velocity_cps == 0L) return;
+    diagnostic->count++;
+    diagnostic->pulse_count = s_pulse_input.state.accepted_pulse_count;
+    diagnostic->tick_ms = HAL_GetTick();
+    diagnostic->interval_ticks = interval_ticks;
+    diagnostic->elapsed_ticks = elapsed_ticks;
+    diagnostic->velocity_cps = s_pulse_input.command_velocity_cps;
+}
+
+/* 仅清诊断；初始化和重新使能时调用，不改变轨迹或控制参数。 */
+static void PulseInput_ResetDiagnostics(void)
+{
+    const PulseInput_ResetDiagnostic_t empty = {0};
+    const PulseInput_StopTiming_t empty_timing = {0};
+    s_pulse_input.state.timeout_reset = empty;
+    s_pulse_input.state.boundary_reset = empty;
+    s_pulse_input.state.stop_timing = empty_timing;
+    s_pulse_input.stop_braking_samples = 0U;
+}
+
+/* 正负方向对称；50mA门槛避免把零点噪声当作有效制动。 */
+static uint8_t PulseInput_IsDiagnosticBraking(int32_t iq_ma)
+{
+    return ((s_pulse_input.state.stop_timing.direction > 0L && iq_ma <= -50L) ||
+            (s_pulse_input.state.stop_timing.direction < 0L && iq_ma >= 50L)) ? 1U : 0U;
+}
+
+/* 只在判停提交处调用（已关中断）；新STEP取消旧候选记录。 */
+static void PulseInput_ArmStopTiming(void)
+{
+    volatile PulseInput_StopTiming_t *diag = &s_pulse_input.state.stop_timing;
+    const volatile DqCurrentLoop_State_t *current = DqCurrentLoop_GetState();
+    if ((diag->flags != 0U) || (s_pulse_input.state.accepted_pulse_count == 0U)) return;
+    diag->stop_ticks = PulseInput_GetTimerTimestamp() -
+                       s_pulse_input.state.last_edge_capture_cycle_count;
+    diag->target_ticks = 0U;
+    diag->measured_ticks = 0U;
+    diag->confirmed_ticks = 0U;
+    diag->pulse_count = s_pulse_input.state.accepted_pulse_count;
+    diag->direction = s_pulse_input.last_step_direction;
+    diag->current_at_stop_ma = current->measured_q_ma;
+    s_pulse_input.stop_braking_samples = 0U;
+    diag->flags = 1U;
+    if (PulseInput_IsDiagnosticBraking(current->target_q_ma) != 0U)
+    {
+        diag->target_ticks = diag->stop_ticks;
+        diag->flags |= 2U | 32U;
+    }
+    if (PulseInput_IsDiagnosticBraking(current->measured_q_ma) != 0U)
+        diag->flags |= 64U;
+}
+
+/* 两类事件共用短临界区；非活动时立即返回，ISR内不做浮点或串口操作。 */
+static void PulseInput_RecordCurrentEvent(int32_t iq_ma, uint8_t is_sample)
+{
+    volatile PulseInput_StopTiming_t *diag = &s_pulse_input.state.stop_timing;
+    uint32_t mask;
+    uint32_t elapsed;
+    if (s_pulse_input.state.enabled == 0U ||
+        (diag->flags & 1U) == 0U || (diag->flags & 16U) != 0U ||
+        (diag->flags & (2U | 8U)) == (2U | 8U)) return;
+    mask = __get_PRIMASK();
+    __disable_irq();
+    if ((diag->flags & 1U) != 0U && (diag->flags & 16U) == 0U &&
+        (diag->flags & (2U | 8U)) != (2U | 8U) &&
+        (TIM3->SR & TIM_SR_CC2IF) == 0U)
+    {
+        elapsed = PulseInput_GetTimerTimestamp() -
+                  s_pulse_input.state.last_edge_capture_cycle_count;
+        if (elapsed > PULSE_INPUT_CAPTURE_TIMER_HZ / 10U)
+            diag->flags |= 16U; /* 100ms结束窗口；未出现的事件保持无效。 */
+        else if (PulseInput_IsDiagnosticBraking(iq_ma) != 0U)
+        {
+            if (is_sample == 0U && (diag->flags & 2U) == 0U)
+            {
+                diag->target_ticks = elapsed;
+                diag->flags |= 2U;
+            }
+            else if (is_sample != 0U && (diag->flags & 8U) == 0U)
+            {
+                if ((diag->flags & 4U) == 0U)
+                {
+                    diag->measured_ticks = elapsed;
+                    diag->flags |= 4U;
+                }
+                if (++s_pulse_input.stop_braking_samples >= 3U)
+                {
+                    diag->confirmed_ticks = elapsed;
+                    diag->flags |= 8U;
+                }
+            }
+        }
+        else if (is_sample != 0U) s_pulse_input.stop_braking_samples = 0U;
+    }
+    if (mask == 0U) __enable_irq();
+}
+
+void PulseInput_RecordCurrentTarget(int32_t iq_ma)
+{
+    PulseInput_RecordCurrentEvent(iq_ma, 0U);
+}
+
+void PulseInput_RecordCurrentSample(int32_t iq_ma)
+{
+    PulseInput_RecordCurrentEvent(iq_ma, 1U);
 }
 
 void PulseInput_Init(void)
@@ -211,6 +340,7 @@ void PulseInput_Init(void)
     s_pulse_input.state.pulse_stream_active = 0U;
     s_pulse_input.state.pulse_decelerating = 0U;
     s_pulse_input.state.accepted_pulse_count = 0U;
+    PulseInput_ResetDiagnostics();
     s_pulse_input.state.ignored_pulse_count = 0U;
     s_pulse_input.state.last_step_tick_ms = 0U;
     s_pulse_input.state.last_edge_capture_cycle_count = 0U;
@@ -310,7 +440,7 @@ uint8_t PulseInput_Start(void)
     return 1U;
 }
 
-/* 真实与模拟 STEP 共用的最短处理核心：累加位置并锁存边沿诊断。 */
+/* STEP 边沿的最短处理核心：累加位置并锁存边沿诊断。 */
 static void PulseInput_ProcessStepCaptured(uint16_t capture_count,
                                            uint8_t direction_positive)
 {
@@ -325,6 +455,7 @@ static void PulseInput_ProcessStepCaptured(uint16_t capture_count,
 
     position_increment = (direction_positive != 0U) ?
         PULSE_INPUT_COUNTS_PER_PULSE : -PULSE_INPUT_COUNTS_PER_PULSE;
+    s_pulse_input.state.stop_timing.flags = 0U;
 
     /*
      * 与原装STEP驱动器一致：边沿到来即推进位置参考，避免在1ms周期内
@@ -375,9 +506,9 @@ void PulseInput_OnStepCaptured(uint16_t capture_count)
 {
     uint8_t direction_positive;
 
-    /* 模拟器独占运行时，禁止真实输入与虚拟边沿混入同一条轨迹。 */
-    if ((PulseGenerator_IsRunning() != 0U) ||
-        (PulseInput_IsExternalEnableActive() == 0U))
+    if (s_simulated_source != 0U) return;
+    /* 外部 EN 无效时忽略 STEP，保持既有位置目标。 */
+    if (PulseInput_IsExternalEnableActive() == 0U)
     {
         s_pulse_input.state.ignored_pulse_count++;
         return;
@@ -390,17 +521,27 @@ void PulseInput_OnStepCaptured(uint16_t capture_count)
     PulseInput_ProcessStepCaptured(capture_count, direction_positive);
 }
 
-/* 单板发生器入口：方向由发生器参数提供，其他处理与真实 STEP 完全相同。 */
-void PulseInput_OnSimulatedStepCaptured(uint16_t capture_count,
-                                        int8_t direction)
+/* Source is explicit and stays selected after the last edge; no end notification. */
+void PulseInput_SelectSimulatedSource(uint8_t enabled)
 {
-    if ((direction != 1) && (direction != -1))
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    if (s_simulated_source != (enabled != 0U))
     {
-        s_pulse_input.state.ignored_pulse_count++;
-        return;
+        s_pulse_input.last_step_cycle_valid = 0U;
+        s_pulse_input.last_step_interval_cycles = 0U;
+        s_pulse_input.last_observed_raw_speed_mrpm = 0L;
+        s_pulse_input.deceleration_confirmation_count = 0U;
+        s_pulse_input.state.pulse_decelerating = 0U;
     }
-    PulseInput_ProcessStepCaptured(capture_count,
-                                   (direction > 0) ? 1U : 0U);
+    s_simulated_source = (enabled != 0U);
+    if (mask == 0U) __enable_irq();
+}
+
+void PulseInput_OnSimulatedStepCaptured(uint16_t capture_count, int8_t direction)
+{
+    if (s_simulated_source != 0U)
+        PulseInput_ProcessStepCaptured(capture_count, (direction > 0) ? 1U : 0U);
 }
 
 void PulseInput_Enable(void)
@@ -433,6 +574,7 @@ void PulseInput_Enable(void)
     s_pulse_input.state.pulse_stream_active = 0U;
     s_pulse_input.state.pulse_decelerating = 0U;
     s_pulse_input.state.accepted_pulse_count = 0U;
+    PulseInput_ResetDiagnostics();
     s_pulse_input.state.ignored_pulse_count = 0U;
     s_pulse_input.state.last_step_tick_ms = HAL_GetTick();
     s_pulse_input.state.last_edge_capture_cycle_count =
@@ -477,9 +619,10 @@ void PulseInput_Enable(void)
 
 void PulseInput_Disable(void)
 {
-    /* 控制链关闭时一并撤销单板模拟边沿，避免无主的 TIM3_CH3 中断。 */
     PulseGenerator_Stop();
+    s_simulated_source = 0U;
     s_pulse_input.state.enabled = 0U;
+    s_pulse_input.state.stop_timing.flags = 0U;
     s_pulse_input.state.raw_reference_speed_mrpm = 0L;
     s_pulse_input.state.reference_speed_mrpm = 0L;
     s_pulse_input.state.pulse_decelerating = 0U;
@@ -494,6 +637,7 @@ static void PulseInput_UpdateCommandTrajectory250us(
     int32_t pulse_position_count,
     uint32_t step_interval_cycles,
     uint8_t step_cycle_valid,
+    uint32_t elapsed_ticks,
     int32_t *command_position_count,
     int32_t *command_speed_mrpm)
 {
@@ -513,6 +657,8 @@ static void PulseInput_UpdateCommandTrajectory250us(
 
     if (position_error_q16 == 0LL)
     {
+        PulseInput_RecordReset(&s_pulse_input.state.boundary_reset,
+                               step_interval_cycles, elapsed_ticks);
         s_pulse_input.command_velocity_cps = 0L;
         *command_position_count = pulse_position_count;
         *command_speed_mrpm = 0L;
@@ -585,6 +731,8 @@ static void PulseInput_UpdateCommandTrajectory250us(
         ((position_error_q16 < 0LL) &&
          (next_position_q16 <= pulse_position_q16)))
     {
+        PulseInput_RecordReset(&s_pulse_input.state.boundary_reset,
+                               step_interval_cycles, elapsed_ticks);
         next_position_q16 = pulse_position_q16;
         s_pulse_input.command_velocity_cps = 0L;
     }
@@ -599,6 +747,11 @@ static void PulseInput_UpdateCommandTrajectory250us(
 void PulseInput_Tick250us(void)
 {
     uint32_t interrupt_mask;
+    uint32_t snapshot_pulse_count;
+    uint32_t snapshot_timer_count;
+    uint32_t capture_pending;
+    uint8_t external_enable_active;
+    uint8_t terminal_committed = 0U;
     uint32_t step_interval_cycles;
     uint32_t last_step_cycle_count;
     uint32_t elapsed_cycles;
@@ -631,6 +784,11 @@ void PulseInput_Tick250us(void)
         s_pulse_input.state.last_edge_reference_position_count;
     last_edge_reached = s_pulse_input.state.last_edge_reached;
     last_edge_stable = s_pulse_input.state.last_edge_stable;
+    /* 同一临界区取得STEP快照及当前时间，禁止用旧STEP减去延后的now。 */
+    snapshot_pulse_count = s_pulse_input.state.accepted_pulse_count;
+    snapshot_timer_count = PulseInput_GetTimerTimestamp();
+    capture_pending = (s_simulated_source != 0U) ? 0U : (TIM3->SR & TIM_SR_CC2IF);
+    external_enable_active = PulseInput_IsExternalEnableActive();
     if (interrupt_mask == 0U) __enable_irq();
 
     /*
@@ -638,16 +796,16 @@ void PulseInput_Tick250us(void)
      * 认为流结束。此判断仅影响 CmdPos 向 PulsePos 的终点交接和诊断状态，
      * 不会伪造或删除任何外部位置脉冲。
      */
-    elapsed_cycles = PulseInput_GetTimerTimestamp() - last_step_cycle_count;
+    elapsed_cycles = snapshot_timer_count - last_step_cycle_count;
 
-    if ((PulseInput_IsExternalEnableActive() != 0U) &&
+    if ((external_enable_active != 0U) &&
         (step_cycle_valid != 0U) && (step_interval_cycles != 0U) &&
-        ((uint64_t)elapsed_cycles * 1000ULL <=
-         (uint64_t)step_interval_cycles * PULSE_INPUT_STREAM_TIMEOUT_PERMILLE))
+        ((capture_pending != 0U) ||
+         ((uint64_t)elapsed_cycles * 1000ULL <=
+          (uint64_t)step_interval_cycles * PULSE_INPUT_STREAM_TIMEOUT_PERMILLE)))
     {
         stream_active = 1U;
     }
-    s_pulse_input.state.pulse_stream_active = stream_active;
 
     /*
      * 每个STEP边沿已经在ISR中重置候选终点。若没有下一STEP覆盖它，此处
@@ -748,23 +906,50 @@ void PulseInput_Tick250us(void)
     if ((stream_active == 0U) && (step_cycle_valid != 0U) &&
         (step_interval_cycles != 0U))
     {
-        s_pulse_input.command_position_q16 =
-            (int64_t)pulse_position_count *
-            PULSE_INPUT_COMMAND_POSITION_Q16_SCALE;
-        s_pulse_input.command_velocity_cps = 0L;
-        command_position_count = pulse_position_count;
-        command_speed_mrpm = 0L;
+        /* 诊断处理期间可能来了新STEP；检查与交接须在同一短临界区内。 */
+        interrupt_mask = __get_PRIMASK();
+        __disable_irq();
+        if ((PulseInput_IsExternalEnableActive() != 0U) &&
+            ((s_pulse_input.state.accepted_pulse_count != snapshot_pulse_count) ||
+             (s_pulse_input.last_step_cycle_count != last_step_cycle_count) ||
+             ((s_simulated_source == 0U) && ((TIM3->SR & TIM_SR_CC2IF) != 0U))))
+        {
+            /* 新输入否定旧判停；刷新轨迹输入，不清零、不伪造STEP。 */
+            pulse_position_count = s_pulse_input.state.reference_position_count;
+            step_interval_cycles = s_pulse_input.last_step_interval_cycles;
+            step_cycle_valid = s_pulse_input.last_step_cycle_valid;
+            last_step_cycle_count = s_pulse_input.last_step_cycle_count;
+            elapsed_cycles = PulseInput_GetTimerTimestamp() - last_step_cycle_count;
+            pulse_decelerating = s_pulse_input.state.pulse_decelerating;
+            stream_active = 1U;
+        }
+        else
+        {
+            PulseInput_RecordReset(&s_pulse_input.state.timeout_reset,
+                                   step_interval_cycles, elapsed_cycles);
+            PulseInput_ArmStopTiming();
+            s_pulse_input.command_position_q16 =
+                (int64_t)pulse_position_count *
+                PULSE_INPUT_COMMAND_POSITION_Q16_SCALE;
+            s_pulse_input.command_velocity_cps = 0L;
+            command_position_count = pulse_position_count;
+            command_speed_mrpm = 0L;
+            terminal_committed = 1U;
+        }
+        if (interrupt_mask == 0U) __enable_irq();
     }
-    else
+    if (terminal_committed == 0U)
     {
         PulseInput_UpdateCommandTrajectory250us(
             pulse_position_count,
             step_interval_cycles,
             step_cycle_valid,
+            elapsed_cycles,
             &command_position_count,
             &command_speed_mrpm);
     }
 
+    s_pulse_input.state.pulse_stream_active = stream_active;
     /* 仅供下一个TIM3_CH2边沿锁存诊断，不参与控制决策。 */
     s_pulse_input.command_position_count = command_position_count;
 

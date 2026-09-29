@@ -1195,8 +1195,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\Application\pulse_input.c</PathWithFileName>
-      <FilenameWithoutPath>pulse_input.c</FilenameWithoutPath>
+      <PathWithFileName>..\Application\pulse_generator.c</PathWithFileName>
+      <FilenameWithoutPath>pulse_generator.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -1207,8 +1207,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\Application\pulse_input.h</PathWithFileName>
-      <FilenameWithoutPath>pulse_input.h</FilenameWithoutPath>
+      <PathWithFileName>..\Application\pulse_generator.h</PathWithFileName>
+      <FilenameWithoutPath>pulse_generator.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -1219,8 +1219,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\Application\pulse_generator.c</PathWithFileName>
-      <FilenameWithoutPath>pulse_generator.c</FilenameWithoutPath>
+      <PathWithFileName>..\Application\pulse_input.c</PathWithFileName>
+      <FilenameWithoutPath>pulse_input.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -1231,8 +1231,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>..\Application\pulse_generator.h</PathWithFileName>
-      <FilenameWithoutPath>pulse_generator.h</FilenameWithoutPath>
+      <PathWithFileName>..\Application\pulse_input.h</PathWithFileName>
+      <FilenameWithoutPath>pulse_input.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>

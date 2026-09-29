@@ -200,7 +200,7 @@ uint8_t PositionLoop_SetTargetPositionCount(int32_t target_position_count)
     s_position_loop.external_pulse_decelerating = 0U;
     s_position_loop.external_deceleration_braking_active = 0U;
     s_position_loop.external_terminal_braking_active = 0U;
-    (void)SpeedLoop_SetExternalBrakingCurrentLimitMa(0L);
+    (void)SpeedLoop_SetExternalBrakingCurrentLimitMa(0L, 0U);
     s_position_loop.state.target_position_count = target_position_count;
     (void)TrajectoryPlanner_SetTargetPositionCount(target_position_count);
     s_position_loop.command_initial_error_count = PositionLoop_Absolute(
@@ -389,7 +389,12 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
     int32_t direct_speed_error_mrpm;
     int32_t direct_speed_reference_mrpm;
     int32_t torque_delta_ma;
+    uint8_t hold_refresh_requested = 0U;
 
+    /* 失败/直转矩分支不沿用上一拍三环拆项；0表示本拍拆项无效。 */
+    s_position_loop.state.diagnostic_p_mrpm = 0L;
+    s_position_loop.state.diagnostic_d_mrpm = 0L;
+    s_position_loop.state.diagnostic_control_mode = 0U;
     if (s_position_loop.state.running == 0U)
     {
         return 0U;
@@ -492,7 +497,7 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
             s_position_loop.config.maximum_tracking_speed_mrpm);
         (void)SpeedLoop_SetTargetSpeedMrpm(s_position_loop.state.speed_target_mrpm);
         (void)SpeedLoop_SetExternalBrakingCurrentLimitMa(
-            s_position_loop.config.external_torque_limit_ma);
+            s_position_loop.config.external_torque_limit_ma, 0U);
         (void)SpeedLoop_SetExternalTorqueOverride(
             s_position_loop.external_direct_torque_command_ma, 1U);
         (void)SpeedLoop_ApplyExternalTorqueOverrideFast();
@@ -517,15 +522,13 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
         }
         external_terminal_braking =
             ((s_position_loop.external_pulse_stream_active == 0U) &&
-             (s_position_loop.state.reference_speed_mrpm == 0L) &&
-             (external_reference_changed == 0U)) ? 1U : 0U;
+             (s_position_loop.state.reference_speed_mrpm == 0L)) ? 1U : 0U;
         external_deceleration_braking =
             (s_position_loop.external_pulse_decelerating != 0U) ? 1U : 0U;
         if ((external_deceleration_braking != 0U) &&
             (s_position_loop.external_deceleration_braking_active == 0U))
         {
-            /* 清掉加速期积分，制动力从减速初段立即生效。 */
-            (void)SpeedLoop_ResetIntegrator();
+            /* 由速度环按积分方向判断，不在减速入口无条件清积分。 */
             s_position_loop.external_deceleration_braking_active = 1U;
         }
         else if (external_deceleration_braking == 0U)
@@ -535,7 +538,8 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
         if ((external_terminal_braking != 0U) &&
             (s_position_loop.external_terminal_braking_active == 0U))
         {
-            (void)SpeedLoop_ResetIntegrator();
+            /* 最终位置交接当拍进入HOLD；积分清零交由速度环串行执行。 */
+            hold_refresh_requested = 1U;
             s_position_loop.external_terminal_braking_active = 1U;
         }
         else if (external_terminal_braking == 0U)
@@ -545,7 +549,9 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
         /* 速度环会按实时母线电压降额此处的2.2A制动请求。 */
         (void)SpeedLoop_SetExternalBrakingCurrentLimitMa(
             ((external_deceleration_braking != 0U) ||
-             (external_terminal_braking != 0U)) ? 2200L : 0L);
+             (external_terminal_braking != 0U)) ? 2200L : 0L,
+            ((external_deceleration_braking != 0U) &&
+             (s_position_loop.external_pulse_stream_active != 0U)) ? 1U : 0U);
         position_correction_mrpm =
             (int64_t)s_position_loop.config.kp_mrpm_per_count *
             s_position_loop.state.position_error_count;
@@ -577,6 +583,9 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
         speed_command_mrpm =
             position_correction_mrpm - speed_damping_mrpm +
             s_position_loop.state.reference_speed_mrpm;
+        s_position_loop.state.diagnostic_control_mode =
+            (external_terminal_braking != 0U) ? 4U :
+            ((external_deceleration_braking != 0U) ? 3U : 2U);
         /*
          * 脉冲流仍在持续时，CmdSpeed 是外部轨迹的一部分。若仅因转子
          * 暂时领先 CmdPos 就将正向命令钳为零，会在减速段造成“猛刹—
@@ -610,7 +619,13 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
             position_correction_mrpm -
             speed_damping_mrpm +
             s_position_loop.state.reference_speed_mrpm;
+        s_position_loop.state.diagnostic_control_mode = 1U;
     }
+    /* 仅复制本拍运算结果，诊断截断不参与控制；D记录实际相加的符号。 */
+    s_position_loop.state.diagnostic_p_mrpm =
+        PositionLoop_Clamp(position_correction_mrpm, INT32_MAX);
+    s_position_loop.state.diagnostic_d_mrpm =
+        PositionLoop_Clamp(-speed_damping_mrpm, INT32_MAX);
     /*
      * 轨迹巡航速度与位置跟随命令上限必须分离：
      * 参考轨迹以maximum_speed_mrpm运行；位置落后时，P项需要少量速度
@@ -621,6 +636,11 @@ static uint8_t PositionLoop_UpdateControl(uint8_t update_trajectory)
         speed_command_mrpm,
         s_position_loop.config.maximum_tracking_speed_mrpm);
     (void)SpeedLoop_SetTargetSpeedMrpm(s_position_loop.state.speed_target_mrpm);
+    if (hold_refresh_requested != 0U)
+    {
+        /* 必须先提交本拍速度/制动限幅，再请求无重复积分的快速刷新。 */
+        SpeedLoop_RequestHoldRefresh();
+    }
 
     return 1U;
 }

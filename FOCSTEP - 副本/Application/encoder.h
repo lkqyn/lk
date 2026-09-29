@@ -29,7 +29,7 @@ typedef struct
 
 /**
  * @brief 供1kHz控制与诊断任务读取的测速快照。
- * @note 三种速度均由同一次1ms位置采样生成，便于逐点比较测速算法。
+ * @note 各种速度均由同一次1ms位置采样生成，便于逐点比较测速算法。
  */
 typedef struct
 {
@@ -37,6 +37,7 @@ typedef struct
     int32_t adaptive_speed_mrpm;
     int32_t fixed_5ms_speed_mrpm;
     int32_t fixed_10ms_speed_mrpm;
+    int32_t fixed_2ms_speed_mrpm;
 } Encoder_SpeedDiagnostic_t;
 
 /**
@@ -67,9 +68,8 @@ void Encoder_SetZero(void);
 int32_t Encoder_GetPositionCountFast(void);
 
 /**
- * @brief 读取供速度环使用的5ms滑动窗口转速，单位mrpm。
- * @note 4000计数/圈编码器在200rpm时5ms窗口仍约13计数；速度量化为
- *       3rpm/count，可兼顾低速平滑和速度环动态响应。
+ * @brief 读取控制使用的2ms滑动窗口转速，单位mrpm。
+ * @note 4000计数/圈时量化为7.5rpm/count；5ms窗口保留作诊断对照。
  */
 int32_t Encoder_GetControlSpeedMrpmFast(void);
 

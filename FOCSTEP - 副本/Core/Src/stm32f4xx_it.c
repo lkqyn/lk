@@ -23,12 +23,12 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "pulse_generator.h"
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
 #include "pulse_input.h"
+#include "pulse_generator.h"
 #include "tim.h"
 /* USER CODE END Includes */
 
@@ -263,7 +263,7 @@ void TIM2_IRQHandler(void)
 void TIM3_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM3_IRQn 0 */
-  /* CH2捕获、CH3模拟比较和溢出均交给HAL分发，避免双入口吞掉新事件。 */
+  /* CH2 外部脉冲捕获和计数溢出统一交给 HAL 分发。 */
 
   /* USER CODE END TIM3_IRQn 0 */
   HAL_TIM_IRQHandler(&htim3);
@@ -346,14 +346,11 @@ void OTG_FS_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
-/* HAL清除CH3标志后调用一次；期间新到的比较事件保留给下一次IRQ。 */
+/* USER CODE END 1 */
+
+/* CH3 is output-compare timing only; CH2 remains the physical STEP capture. */
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if ((htim->Instance == TIM3) &&
-      (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3))
-  {
-    PulseGenerator_OnTim3CompareInterrupt();
-  }
+    if ((htim->Instance == TIM3) && (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_3))
+        PulseGenerator_OnTim3CompareInterrupt();
 }
-
-/* USER CODE END 1 */

@@ -51,6 +51,11 @@ typedef struct
     int32_t position_error_count;
     int32_t speed_target_mrpm;
     int32_t reference_speed_mrpm;
+    /* 仅诊断：限幅前P项、实际相加的D项，单位mrpm。 */
+    int32_t diagnostic_p_mrpm;
+    int32_t diagnostic_d_mrpm;
+    /* 0无效/直转矩，1普通位置，2外部跟随，3外部减速，4末端定位。 */
+    uint8_t diagnostic_control_mode;
     uint32_t settled_time_ms;
     uint8_t reached;
     uint8_t running;
